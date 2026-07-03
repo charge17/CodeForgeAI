@@ -641,8 +641,6 @@ export default function WorkspaceScreen() {
                     if (activeFile) {
                       setShowSaveHint(text !== (activeFile.content || ''));
                     }
-                      setShowSaveHint(text !== (activeFile.content || ''));
-                    }
                   }}
                   style={styles.codeInput} scrollEnabled={false}
                   autoCapitalize="none" autoCorrect={false} spellCheck={false}
