@@ -4,6 +4,7 @@ import {
   TextInput, Modal, Platform, Animated,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Radius, Spacing } from '@/constants/theme';
 import { useApp } from '@/hooks/useApp';
@@ -11,6 +12,7 @@ import {
   NODE_DEFINITIONS, GraphNode, NodeType, NodeCategory,
   Script, Selector, Recording, INITIAL_SCRIPTS, INITIAL_SELECTORS, INITIAL_RECORDINGS,
 } from '@/services/mockData';
+import { pythonRunner, PYODIDE_HTML, PYTHON_TEMPLATES, PythonResult } from '@/services/pythonRunner';
 import GraphYAMLView from '@/components/graph/GraphYAMLView';
 import GraphAIAssistant from '@/components/graph/GraphAIAssistant';
 
@@ -24,7 +26,6 @@ const CAT_ICON: Record<string, string> = {
 };
 const LOOP_INNER = ['n10', 'n11', 'n12', 'n13', 'n14', 'n15', 'n16'];
 
-// ── Script/Recording node type helpers ──────────────────────────
 type ScriptLang = 'javascript' | 'python' | 'recording';
 interface AttachedScript {
   nodeId: string;
@@ -33,23 +34,36 @@ interface AttachedScript {
   name: string;
   recordingId?: string;
 }
-
-// ── Breakpoint state ─────────────────────────────────────────────
 interface BreakpointInfo {
   nodeId: string;
   label: string;
   context: Record<string, any>;
 }
 
-// ── Pipeline Block ─────────────────────────────────────────────────
+// ── Execution speed control ─────────────────────────────────────
+type ExecSpeed = 'slow' | 'normal' | 'fast' | 'instant';
+const SPEED_MS: Record<ExecSpeed, number> = { slow: 1200, normal: 700, fast: 350, instant: 50 };
+const SPEED_COLOR: Record<ExecSpeed, string> = { slow: '#607D8B', normal: Colors.primary, fast: '#FFB547', instant: '#FF4081' };
+
+// ── Node execution result ───────────────────────────────────────
+interface NodeResult {
+  nodeId: string;
+  output: string;
+  timestamp: string;
+  duration: number;
+}
+
+// ── Pipeline Block ──────────────────────────────────────────────
 function PipelineBlock({
   node, index, isSelected, isInLoop, isLoopHeader, loopExpanded, pulseAnim,
-  onPress, onToggleLoop, isBreakpointHit, hasBreakpoint,
+  onPress, onToggleLoop, isBreakpointHit, hasBreakpoint, hasScript, scriptLang,
+  result, zoom,
 }: {
   node: GraphNode; index: number; isSelected: boolean; isInLoop: boolean;
   isLoopHeader: boolean; loopExpanded: boolean; pulseAnim?: Animated.Value;
   onPress: () => void; onToggleLoop?: () => void;
   isBreakpointHit?: boolean; hasBreakpoint?: boolean;
+  hasScript?: boolean; scriptLang?: ScriptLang; result?: NodeResult; zoom: number;
 }) {
   const def = NODE_DEFINITIONS.find(d => d.type === node.type);
   if (!def) return null;
@@ -61,6 +75,7 @@ function PipelineBlock({
     node.status === 'paused' ? Colors.warning : Colors.border;
   const isRunning = node.status === 'running';
   const bpColor = '#FF4081';
+  const LANG_COL: Record<ScriptLang, string> = { javascript: '#F0DB4F', python: '#3776AB', recording: Colors.error };
 
   const content = (
     <Pressable
@@ -76,9 +91,9 @@ function PipelineBlock({
         isBreakpointHit && styles.blockBreakpointHit,
       ]}
     >
-      {/* Breakpoint dot */}
-      {hasBreakpoint && (
-        <View style={[styles.bpDot, isBreakpointHit && styles.bpDotActive]} />
+      {hasBreakpoint && <View style={[styles.bpDot, isBreakpointHit && styles.bpDotActive]} />}
+      {hasScript && scriptLang && (
+        <View style={[styles.scriptDot, { backgroundColor: LANG_COL[scriptLang] }]} />
       )}
 
       <View style={[styles.blockLeft, { backgroundColor: catColor + '15' }]}>
@@ -102,6 +117,15 @@ function PipelineBlock({
               <Text style={styles.bpBadgeText}>BP</Text>
             </View>
           )}
+          {hasScript && scriptLang && (
+            <View style={[styles.scriptBadge, { backgroundColor: LANG_COL[scriptLang] + '20' }]}>
+              <MaterialCommunityIcons
+                name={scriptLang === 'javascript' ? 'language-javascript' : scriptLang === 'python' ? 'language-python' : 'record-circle'}
+                size={9} color={LANG_COL[scriptLang]}
+              />
+              <Text style={[styles.scriptBadgeText, { color: LANG_COL[scriptLang] }]}>{scriptLang}</Text>
+            </View>
+          )}
         </View>
         {node.config && Object.keys(node.config).length > 0 && (
           <View style={styles.configRow}>
@@ -121,6 +145,14 @@ function PipelineBlock({
                node.status === 'completed' ? '✓ مكتمل' :
                node.status === 'failed' ? '✗ فشل' : '⏸ متوقف'}
             </Text>
+          </View>
+        )}
+        {result && node.status === 'completed' && (
+          <View style={styles.nodeResultBox}>
+            <Text style={styles.nodeResultText} numberOfLines={1}>
+              ⬡ {result.output.substring(0, 50)}
+            </Text>
+            <Text style={styles.nodeResultTime}>{result.duration}ms</Text>
           </View>
         )}
         {isBreakpointHit && (
@@ -144,7 +176,6 @@ function PipelineBlock({
   return content;
 }
 
-// ── Connector ───────────────────────────────────────────────────────
 function Connector({ label, isInLoop, isActive }: { label?: string; isInLoop?: boolean; isActive?: boolean }) {
   const color = isActive ? Colors.running : isInLoop ? CAT_COLOR.Logic + '60' : Colors.border;
   return (
@@ -160,7 +191,193 @@ function Connector({ label, isInLoop, isActive }: { label?: string; isInLoop?: b
   );
 }
 
-// ── Add Node Modal ─────────────────────────────────────────────────
+// ── Python Executor Panel ───────────────────────────────────────
+function PythonExecutorPanel({
+  nodeId, nodeLabel, initialCode, context,
+  onClose, onResult,
+}: {
+  nodeId: string; nodeLabel: string; initialCode?: string;
+  context: Record<string, any>;
+  onClose: () => void;
+  onResult: (r: PythonResult, code: string) => void;
+}) {
+  const [code, setCode] = useState(initialCode || PYTHON_TEMPLATES.hello);
+  const [result, setResult] = useState<PythonResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [pyReady, setPyReady] = useState(pythonRunner.isReady());
+  const [activeTemplate, setActiveTemplate] = useState('hello');
+  const pyWebViewRef = useRef<WebView>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!pythonRunner.isReady()) {
+      pythonRunner.setPyodideWebViewRef(pyWebViewRef.current);
+    }
+  }, []);
+
+  const templates = [
+    { key: 'hello', label: 'Hello', icon: 'language-python' },
+    { key: 'data_analysis', label: 'Data', icon: 'chart-bar' },
+    { key: 'string_processing', label: 'String', icon: 'text' },
+    { key: 'fibonacci', label: 'Math', icon: 'function-variant' },
+    { key: 'api_scraper', label: 'API', icon: 'api' },
+    { key: 'context_script', label: 'Context', icon: 'variable' },
+  ];
+
+  const run = async () => {
+    if (!code.trim() || running) return;
+    setRunning(true);
+    setLogs(prev => [...prev, `▶ Running at ${new Date().toLocaleTimeString()}...`]);
+    try {
+      const res = await pythonRunner.execute(code.trim(), context);
+      setResult(res);
+      onResult(res, code.trim());
+      if (res.success) {
+        setLogs(prev => [...prev, `✓ Done in ${res.executionTime}ms`]);
+        if (res.stdout) setLogs(prev => [...prev, ...res.stdout.split('\n').filter(Boolean).map(l => `  ${l}`)]);
+      } else {
+        setLogs(prev => [...prev, `✗ Error: ${res.stderr}`]);
+      }
+    } catch (e: any) {
+      setLogs(prev => [...prev, `✗ ${e?.message}`]);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <Modal visible transparent animationType="slide">
+      <View style={styles.pyModalBg}>
+        <View style={styles.pyModal}>
+          {/* Header */}
+          <View style={styles.pyHeader}>
+            <MaterialCommunityIcons name="language-python" size={18} color="#3776AB" />
+            <Text style={styles.pyTitle}>Python Executor</Text>
+            <View style={styles.pyReadyBadge}>
+              <View style={[styles.pyReadyDot, { backgroundColor: pyReady ? Colors.success : Colors.warning }]} />
+              <Text style={[styles.pyReadyText, { color: pyReady ? Colors.success : Colors.warning }]}>
+                {pyReady ? pythonRunner.getVersion() : 'يتحمّل Pyodide...'}
+              </Text>
+            </View>
+            <Pressable onPress={onClose} style={{ marginLeft: 'auto' as any }}>
+              <MaterialCommunityIcons name="close" size={20} color={Colors.textMuted} />
+            </Pressable>
+          </View>
+
+          {/* Hidden Pyodide WebView */}
+          <View style={{ height: 0, overflow: 'hidden' }}>
+            <WebView
+              ref={pyWebViewRef}
+              source={{ html: PYODIDE_HTML }}
+              javaScriptEnabled
+              onMessage={(e) => {
+                pythonRunner.handleMessage(e.nativeEvent.data);
+                try {
+                  const msg = JSON.parse(e.nativeEvent.data);
+                  if (msg.type === 'pyodide_ready') setPyReady(true);
+                } catch {}
+              }}
+              onLoadEnd={() => {
+                pythonRunner.setPyodideWebViewRef(pyWebViewRef.current);
+              }}
+            />
+          </View>
+
+          {/* Template picker */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}
+            style={styles.pyTemplateBar} contentContainerStyle={styles.pyTemplateContent}>
+            {templates.map(t => (
+              <Pressable key={t.key} onPress={() => {
+                setActiveTemplate(t.key);
+                setCode((PYTHON_TEMPLATES as any)[t.key] || '');
+              }} style={[styles.pyTemplateBtn, activeTemplate === t.key && styles.pyTemplateBtnActive]}>
+                <MaterialCommunityIcons name={t.icon as any} size={12} color={activeTemplate === t.key ? '#3776AB' : Colors.textDim} />
+                <Text style={[styles.pyTemplateBtnText, activeTemplate === t.key && { color: '#3776AB' }]}>{t.label}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+
+          {/* Code editor */}
+          <View style={styles.pyCodeWrap}>
+            <View style={styles.pyCodeHeader}>
+              <MaterialCommunityIcons name="code-braces" size={12} color="#3776AB" />
+              <Text style={styles.pyCodeLabel}>Python 3.11</Text>
+              <Text style={styles.pyCodeLines}>{code.split('\n').length} سطر</Text>
+            </View>
+            <ScrollView style={styles.pyCodeScroll} showsVerticalScrollIndicator={false}>
+              <TextInput
+                value={code} onChangeText={setCode}
+                multiline scrollEnabled={false}
+                style={styles.pyCodeInput}
+                autoCapitalize="none" autoCorrect={false} spellCheck={false}
+                textAlignVertical="top"
+                placeholder="# اكتب كود Python هنا..."
+                placeholderTextColor={Colors.textDim}
+              />
+            </ScrollView>
+          </View>
+
+          {/* Context vars */}
+          {Object.keys(context).length > 0 && (
+            <View style={styles.pyContextRow}>
+              <Text style={styles.pyContextLabel}>السياق المُمرَّر:</Text>
+              {Object.entries(context).slice(0, 4).map(([k, v]) => (
+                <View key={k} style={styles.pyContextChip}>
+                  <Text style={styles.pyContextKey}>{k}</Text>
+                  <Text style={styles.pyContextVal}>=</Text>
+                  <Text style={styles.pyContextVal} numberOfLines={1}>{String(v).substring(0, 20)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Run button */}
+          <Pressable onPress={run} disabled={!code.trim() || running}
+            style={[styles.pyRunBtn, (running || !code.trim()) && { opacity: 0.5 }]}>
+            <MaterialCommunityIcons name={running ? 'loading' : 'play'} size={16} color="#fff" />
+            <Text style={styles.pyRunBtnText}>{running ? 'يعمل...' : '▶ تشغيل Python'}</Text>
+            {running && <View style={styles.pyRunSpinner} />}
+          </Pressable>
+
+          {/* Output */}
+          {(result || logs.length > 0) && (
+            <View style={styles.pyOutputWrap}>
+              <View style={styles.pyOutputHeader}>
+                <MaterialCommunityIcons name="console" size={12}
+                  color={result?.success === false ? Colors.error : Colors.success} />
+                <Text style={[styles.pyOutputTitle,
+                  { color: result?.success === false ? Colors.error : Colors.success }]}>
+                  {result?.success === false ? '✗ خطأ' : '✓ المخرجات'}
+                </Text>
+                {result && <Text style={styles.pyOutputTime}>{result.executionTime}ms</Text>}
+                <Pressable onPress={() => { setResult(null); setLogs([]); }} style={{ marginLeft: 'auto' as any }}>
+                  <MaterialCommunityIcons name="close" size={14} color={Colors.textDim} />
+                </Pressable>
+              </View>
+              <ScrollView style={styles.pyOutputScroll} showsVerticalScrollIndicator={false}>
+                {logs.map((l, i) => (
+                  <Text key={i} style={[styles.pyOutputLine,
+                    l.startsWith('✗') ? { color: Colors.error } :
+                    l.startsWith('✓') ? { color: Colors.success } :
+                    l.startsWith('▶') ? { color: Colors.running } :
+                    { color: Colors.textMuted }
+                  ]}>{l}</Text>
+                ))}
+                {result?.stderr ? (
+                  <Text style={[styles.pyOutputLine, { color: Colors.error }]}>
+                    {result.stderr}
+                  </Text>
+                ) : null}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ── Add Node Modal ──────────────────────────────────────────────
 const ALL_CATS: (NodeCategory | 'All')[] = ['All', 'Trigger', 'AI', 'Browser', 'File', 'Task', 'Logic', 'Advanced'];
 
 function AddNodeModal({ visible, onAdd, onClose }: {
@@ -170,7 +387,7 @@ function AddNodeModal({ visible, onAdd, onClose }: {
   const [cat, setCat] = useState<NodeCategory | 'All'>('All');
   const filtered = NODE_DEFINITIONS.filter(d =>
     (cat === 'All' || d.category === cat) &&
-    (!search || d.label.toLowerCase().includes(search.toLowerCase()))
+    (!search || d.label.toLowerCase().includes(search.toLowerCase()) || d.description.includes(search))
   );
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -179,6 +396,7 @@ function AddNodeModal({ visible, onAdd, onClose }: {
         <View style={styles.addModalHeader}>
           <MaterialCommunityIcons name="plus-circle" size={18} color={Colors.primary} />
           <Text style={styles.addModalTitle}>إضافة عقدة</Text>
+          <Text style={styles.addModalCount}>{filtered.length}</Text>
           <Pressable onPress={onClose} style={{ marginLeft: 'auto' as any }}>
             <MaterialCommunityIcons name="close" size={20} color={Colors.textMuted} />
           </Pressable>
@@ -186,18 +404,25 @@ function AddNodeModal({ visible, onAdd, onClose }: {
         <View style={styles.addSearch}>
           <MaterialCommunityIcons name="magnify" size={14} color={Colors.textMuted} />
           <TextInput value={search} onChangeText={setSearch}
-            placeholder="بحث..." placeholderTextColor={Colors.textDim}
+            placeholder="بحث في العقد..." placeholderTextColor={Colors.textDim}
             style={styles.addSearchInput} autoCapitalize="none" />
+          {search.length > 0 && (
+            <Pressable onPress={() => setSearch('')}>
+              <MaterialCommunityIcons name="close-circle" size={14} color={Colors.textDim} />
+            </Pressable>
+          )}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}
           style={{ maxHeight: 38 }} contentContainerStyle={styles.addCatsRow}>
           {ALL_CATS.map(c => {
             const color = c === 'All' ? Colors.primary : (CAT_COLOR[c] || Colors.primary);
+            const cnt = c === 'All' ? NODE_DEFINITIONS.length : NODE_DEFINITIONS.filter(d => d.category === c).length;
             return (
               <Pressable key={c} onPress={() => setCat(c)}
                 style={[styles.catChip, cat === c && { backgroundColor: color + '20', borderColor: color }]}>
                 {c !== 'All' && <MaterialCommunityIcons name={CAT_ICON[c] as any} size={11} color={cat === c ? color : Colors.textDim} />}
                 <Text style={[styles.catChipText, cat === c && { color }]}>{c === 'All' ? 'الكل' : c}</Text>
+                <Text style={[styles.catChipCount, cat === c && { color: color + 'CC' }]}>{cnt}</Text>
               </Pressable>
             );
           })}
@@ -218,39 +443,45 @@ function AddNodeModal({ visible, onAdd, onClose }: {
               </View>
             </Pressable>
           ))}
+          {filtered.length === 0 && (
+            <View style={styles.noResults}>
+              <MaterialCommunityIcons name="magnify-remove-outline" size={32} color={Colors.textDim} />
+              <Text style={styles.noResultsText}>لا توجد نتائج</Text>
+            </View>
+          )}
         </ScrollView>
-        <View style={styles.addModalFooter}>
-          <Text style={styles.addModalFooterText}>{filtered.length} عقدة</Text>
-        </View>
       </View>
     </Modal>
   );
 }
 
-// ── Script Editor Modal ─────────────────────────────────────────────
+// ── Script Editor Modal ─────────────────────────────────────────
 function ScriptEditorModal({
-  visible, nodeId, nodeLabel, attached, onSave, onClose,
+  visible, nodeId, nodeLabel, attached, onSave, onClose, graphContext,
 }: {
   visible: boolean; nodeId: string; nodeLabel: string;
   attached?: AttachedScript;
   onSave: (s: AttachedScript) => void;
   onClose: () => void;
+  graphContext: Record<string, any>;
 }) {
   const [lang, setLang] = useState<ScriptLang>(attached?.lang || 'javascript');
   const [code, setCode] = useState(attached?.code || '');
   const [name, setName] = useState(attached?.name || '');
+  const [showPython, setShowPython] = useState(false);
 
   useEffect(() => {
     if (visible) {
       setLang(attached?.lang || 'javascript');
       setCode(attached?.code || '');
       setName(attached?.name || '');
+      setShowPython(false);
     }
   }, [visible, attached]);
 
   const TEMPLATES: Record<ScriptLang, string> = {
-    javascript: `// JavaScript — يعمل مباشرة في WebView\n(function() {\n  // كودك هنا\n  var result = document.title;\n  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(\n    JSON.stringify({ type: 'script_result', value: result })\n  );\n})();`,
-    python: `# Python — يُشغَّل في بيئة sandbox المحلية\nimport json\n\ndef run(context):\n    # context يحتوي على بيانات السياق الحالي\n    result = {"status": "ok", "message": "تم التنفيذ"}\n    return result`,
+    javascript: `// JavaScript — يعمل مباشرة في WebView\n(function() {\n  var result = document.title;\n  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(\n    JSON.stringify({ type: 'script_result', value: result })\n  );\n})();`,
+    python: PYTHON_TEMPLATES.hello,
     recording: `انتقل إلى: https://chat.deepseek.com\nانتظر ظهور: #chat-input\nاكتب في: #chat-input ← "\${prompt}"\nانقر: button[data-testid="send-button"]\nانتظر اختفاء: button[aria-label="Stop"]\nاستخرج: .response-container:last-child`,
   };
 
@@ -258,11 +489,26 @@ function ScriptEditorModal({
     javascript: '#F0DB4F', python: '#3776AB', recording: Colors.error,
   };
 
+  if (showPython && lang === 'python') {
+    return (
+      <PythonExecutorPanel
+        nodeId={nodeId} nodeLabel={nodeLabel}
+        initialCode={code || PYTHON_TEMPLATES.hello}
+        context={graphContext}
+        onClose={() => setShowPython(false)}
+        onResult={(res, finalCode) => {
+          setCode(finalCode);
+          if (!name) setName(`python-${nodeId}`);
+          setShowPython(false);
+        }}
+      />
+    );
+  }
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalBackdrop2}>
         <View style={styles.scriptEditorModal}>
-          {/* Header */}
           <View style={styles.seHeader}>
             <MaterialCommunityIcons name="code-braces" size={18} color={Colors.primary} />
             <Text style={styles.seTitle}>Script Editor</Text>
@@ -272,7 +518,6 @@ function ScriptEditorModal({
             </Pressable>
           </View>
 
-          {/* Lang selector */}
           <View style={styles.seLangRow}>
             {(['javascript', 'python', 'recording'] as ScriptLang[]).map(l => (
               <Pressable key={l} onPress={() => {
@@ -290,42 +535,42 @@ function ScriptEditorModal({
             ))}
           </View>
 
-          {/* Name */}
           <TextInput
             value={name} onChangeText={setName}
             placeholder={`اسم الـ ${lang === 'recording' ? 'Recording' : 'Script'}...`}
-            placeholderTextColor={Colors.textDim}
-            style={styles.seNameInput}
+            placeholderTextColor={Colors.textDim} style={styles.seNameInput}
           />
 
-          {/* Template button */}
-          <Pressable onPress={() => setCode(TEMPLATES[lang])} style={styles.seTemplateBtn}>
-            <MaterialCommunityIcons name="file-code-outline" size={13} color={Colors.accent} />
-            <Text style={styles.seTemplateText}>استخدم Template</Text>
-          </Pressable>
+          <View style={styles.seTemplateBtns}>
+            <Pressable onPress={() => setCode(TEMPLATES[lang])} style={styles.seTemplateBtn}>
+              <MaterialCommunityIcons name="file-code-outline" size={13} color={Colors.accent} />
+              <Text style={styles.seTemplateText}>Template</Text>
+            </Pressable>
+            {lang === 'python' && (
+              <Pressable onPress={() => setShowPython(true)} style={[styles.seTemplateBtn, { borderColor: '#3776AB' + '50' }]}>
+                <MaterialCommunityIcons name="play-circle" size={13} color="#3776AB" />
+                <Text style={[styles.seTemplateText, { color: '#3776AB' }]}>تشغيل Python ▶</Text>
+              </Pressable>
+            )}
+          </View>
 
-          {/* Code area */}
           <View style={styles.seCodeWrap}>
             <View style={styles.seCodeHeader}>
               <View style={[styles.seLangDot, { backgroundColor: LANG_COLOR[lang] }]} />
               <Text style={[styles.seCodeLangLabel, { color: LANG_COLOR[lang] }]}>
-                {lang === 'recording' ? 'Recording Steps (واحدة لكل سطر)' : lang.toUpperCase()}
+                {lang === 'recording' ? 'Recording Steps' : lang === 'python' ? 'Python 3.11' : 'JavaScript'}
               </Text>
+              <Text style={styles.seCodeLines}>{code.split('\n').length} سطر</Text>
             </View>
             <ScrollView style={styles.seCodeScroll} showsVerticalScrollIndicator={false}>
               <TextInput
-                value={code} onChangeText={setCode}
-                multiline scrollEnabled={false}
-                style={styles.seCodeInput}
-                autoCapitalize="none" autoCorrect={false} spellCheck={false}
-                textAlignVertical="top"
-                placeholder={TEMPLATES[lang]}
-                placeholderTextColor={Colors.textDim}
+                value={code} onChangeText={setCode} multiline scrollEnabled={false}
+                style={styles.seCodeInput} autoCapitalize="none" autoCorrect={false} spellCheck={false}
+                textAlignVertical="top" placeholder={TEMPLATES[lang]} placeholderTextColor={Colors.textDim}
               />
             </ScrollView>
           </View>
 
-          {/* Actions */}
           <View style={styles.seActions}>
             <Pressable onPress={onClose} style={styles.seCancelBtn}>
               <Text style={styles.seCancelText}>إلغاء</Text>
@@ -349,14 +594,10 @@ function ScriptEditorModal({
   );
 }
 
-// ── Browser Recording Attach Modal ──────────────────────────────────
-function RecordingPickModal({
-  visible, nodeId, nodeLabel, recordings, onAttach, onClose,
-}: {
+// ── Recording Pick Modal ────────────────────────────────────────
+function RecordingPickModal({ visible, nodeId, nodeLabel, recordings, onAttach, onClose }: {
   visible: boolean; nodeId: string; nodeLabel: string;
-  recordings: Recording[];
-  onAttach: (s: AttachedScript) => void;
-  onClose: () => void;
+  recordings: Recording[]; onAttach: (s: AttachedScript) => void; onClose: () => void;
 }) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -380,25 +621,14 @@ function RecordingPickModal({
           )}
           {recordings.map(rec => (
             <Pressable key={rec.id}
-              onPress={() => {
-                onAttach({
-                  nodeId, lang: 'recording',
-                  code: rec.steps.join('\n'),
-                  name: rec.name,
-                  recordingId: rec.id,
-                });
-                onClose();
-              }}
-              style={({ pressed }) => [styles.addNodeRow, pressed && { backgroundColor: Colors.surface2 }]}
-            >
+              onPress={() => { onAttach({ nodeId, lang: 'recording', code: rec.steps.join('\n'), name: rec.name, recordingId: rec.id }); onClose(); }}
+              style={({ pressed }) => [styles.addNodeRow, pressed && { backgroundColor: Colors.surface2 }]}>
               <View style={[styles.addNodeIcon, { backgroundColor: Colors.error + '20' }]}>
                 <MaterialCommunityIcons name="record-circle" size={18} color={Colors.error} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.addNodeLabel}>{rec.name}</Text>
-                <Text style={styles.addNodeDesc} numberOfLines={1}>
-                  {rec.steps.length} خطوة · {rec.duration}
-                </Text>
+                <Text style={styles.addNodeDesc} numberOfLines={1}>{rec.steps.length} خطوة · {rec.duration}</Text>
               </View>
               <MaterialCommunityIcons name="link-variant" size={16} color={Colors.textDim} />
             </Pressable>
@@ -409,14 +639,9 @@ function RecordingPickModal({
   );
 }
 
-// ── Breakpoint Panel ─────────────────────────────────────────────────
-function BreakpointPanel({
-  info, onContinue, onStepOver, onAbort,
-}: {
-  info: BreakpointInfo;
-  onContinue: () => void;
-  onStepOver: () => void;
-  onAbort: () => void;
+// ── Breakpoint Panel ────────────────────────────────────────────
+function BreakpointPanel({ info, onContinue, onStepOver, onAbort }: {
+  info: BreakpointInfo; onContinue: () => void; onStepOver: () => void; onAbort: () => void;
 }) {
   const bpColor = '#FF4081';
   return (
@@ -430,16 +655,12 @@ function BreakpointPanel({
         <Text style={styles.bpContextLabel}>السياق الحالي:</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View style={styles.bpContextBox}>
-            {Object.entries(info.context).length === 0 ? (
-              <Text style={styles.bpContextEmpty}>لا يوجد سياق</Text>
-            ) : (
-              Object.entries(info.context).map(([k, v]) => (
-                <View key={k} style={styles.bpContextRow}>
-                  <Text style={styles.bpContextKey}>{k}:</Text>
-                  <Text style={styles.bpContextVal} numberOfLines={1}>{String(v)}</Text>
-                </View>
-              ))
-            )}
+            {Object.entries(info.context).map(([k, v]) => (
+              <View key={k} style={styles.bpContextRow}>
+                <Text style={styles.bpContextKey}>{k}:</Text>
+                <Text style={styles.bpContextVal} numberOfLines={1}>{String(v)}</Text>
+              </View>
+            ))}
           </View>
         </ScrollView>
       </View>
@@ -461,26 +682,19 @@ function BreakpointPanel({
   );
 }
 
-// ── Enhanced Inspector Panel ─────────────────────────────────────────
-function InspectorPanel({
-  node, attachedScript, onClose, onDelete, onToggleBreakpoint,
+// ── Inspector Panel ─────────────────────────────────────────────
+function InspectorPanel({ node, attachedScript, nodeResult, onClose, onDelete, onToggleBreakpoint,
   onOpenScriptEditor, onOpenRecordingPicker,
 }: {
-  node: GraphNode;
-  attachedScript?: AttachedScript;
-  onClose: () => void;
-  onDelete: () => void;
-  onToggleBreakpoint: () => void;
-  onOpenScriptEditor: () => void;
-  onOpenRecordingPicker: () => void;
+  node: GraphNode; attachedScript?: AttachedScript; nodeResult?: NodeResult;
+  onClose: () => void; onDelete: () => void; onToggleBreakpoint: () => void;
+  onOpenScriptEditor: () => void; onOpenRecordingPicker: () => void;
 }) {
   const def = NODE_DEFINITIONS.find(d => d.type === node.type);
   if (!def) return null;
   const catColor = CAT_COLOR[def.category] || Colors.textDim;
   const bpColor = '#FF4081';
-  const scriptLangColor: Record<ScriptLang, string> = {
-    javascript: '#F0DB4F', python: '#3776AB', recording: Colors.error,
-  };
+  const scriptLangColor: Record<ScriptLang, string> = { javascript: '#F0DB4F', python: '#3776AB', recording: Colors.error };
 
   return (
     <View style={styles.inspector}>
@@ -513,12 +727,22 @@ function InspectorPanel({
             <Text style={[styles.inspBpToggleText, node.isBreakpoint && { color: bpColor }]}>
               {node.isBreakpoint ? '⏸ Breakpoint مفعّل' : 'إضافة Breakpoint'}
             </Text>
-            {node.isBreakpoint && (
-              <View style={styles.inspBpDot} />
-            )}
+            {node.isBreakpoint && <View style={styles.inspBpDot} />}
           </Pressable>
 
-          {/* Attached script section */}
+          {/* Execution result */}
+          {nodeResult && (
+            <View style={styles.inspResultBox}>
+              <View style={styles.inspResultHeader}>
+                <MaterialCommunityIcons name="check-circle" size={13} color={Colors.success} />
+                <Text style={styles.inspResultTitle}>نتيجة آخر تنفيذ</Text>
+                <Text style={styles.inspResultTime}>{nodeResult.duration}ms — {nodeResult.timestamp}</Text>
+              </View>
+              <Text style={styles.inspResultOutput} numberOfLines={4}>{nodeResult.output}</Text>
+            </View>
+          )}
+
+          {/* Script */}
           <View style={styles.inspSection}>
             <Text style={styles.inspSectionTitle}>📎 Script مُرفق</Text>
             {attachedScript ? (
@@ -528,13 +752,9 @@ function InspectorPanel({
                     name={attachedScript.lang === 'javascript' ? 'language-javascript' : attachedScript.lang === 'python' ? 'language-python' : 'record-circle'}
                     size={14} color={scriptLangColor[attachedScript.lang]}
                   />
-                  <Text style={[styles.attachedScriptName, { color: scriptLangColor[attachedScript.lang] }]}>
-                    {attachedScript.name}
-                  </Text>
+                  <Text style={[styles.attachedScriptName, { color: scriptLangColor[attachedScript.lang] }]}>{attachedScript.name}</Text>
                   <View style={[styles.attachedLangPill, { backgroundColor: scriptLangColor[attachedScript.lang] + '20' }]}>
-                    <Text style={[styles.attachedLangText, { color: scriptLangColor[attachedScript.lang] }]}>
-                      {attachedScript.lang}
-                    </Text>
+                    <Text style={[styles.attachedLangText, { color: scriptLangColor[attachedScript.lang] }]}>{attachedScript.lang}</Text>
                   </View>
                 </View>
                 <Text style={styles.attachedScriptCode} numberOfLines={3}>
@@ -549,11 +769,11 @@ function InspectorPanel({
               <View style={styles.noScriptBox}>
                 <View style={styles.scriptAttachBtns}>
                   <Pressable onPress={onOpenScriptEditor} style={styles.scriptAttachBtn}>
-                    <MaterialCommunityIcons name="language-javascript" size={13} color='#F0DB4F' />
+                    <MaterialCommunityIcons name="language-javascript" size={13} color="#F0DB4F" />
                     <Text style={[styles.scriptAttachBtnText, { color: '#F0DB4F' }]}>JS</Text>
                   </Pressable>
                   <Pressable onPress={onOpenScriptEditor} style={[styles.scriptAttachBtn, { borderColor: '#3776AB' + '50' }]}>
-                    <MaterialCommunityIcons name="language-python" size={13} color='#3776AB' />
+                    <MaterialCommunityIcons name="language-python" size={13} color="#3776AB" />
                     <Text style={[styles.scriptAttachBtnText, { color: '#3776AB' }]}>Python</Text>
                   </Pressable>
                   <Pressable onPress={onOpenRecordingPicker} style={[styles.scriptAttachBtn, { borderColor: Colors.error + '50' }]}>
@@ -566,13 +786,10 @@ function InspectorPanel({
             )}
           </View>
 
-          {/* Description */}
           <View style={styles.inspSection}>
             <Text style={styles.inspSectionTitle}>الوصف</Text>
             <Text style={styles.inspDesc}>{def.description}</Text>
           </View>
-
-          {/* Config */}
           {node.config && Object.keys(node.config).length > 0 && (
             <View style={styles.inspSection}>
               <Text style={styles.inspSectionTitle}>الإعدادات</Text>
@@ -584,27 +801,20 @@ function InspectorPanel({
               ))}
             </View>
           )}
-
-          {/* Status */}
           <View style={styles.inspSection}>
             <Text style={styles.inspSectionTitle}>الحالة</Text>
             <View style={[styles.inspStatusBox, {
               backgroundColor: node.status === 'completed' ? Colors.successDim
                 : node.status === 'running' ? Colors.primaryDim
-                : node.status === 'failed' ? Colors.errorDim
-                : Colors.surface2
+                : node.status === 'failed' ? Colors.errorDim : Colors.surface2
             }]}>
               <Text style={{
                 color: node.status === 'completed' ? Colors.success
                   : node.status === 'running' ? Colors.running
-                  : node.status === 'failed' ? Colors.error
-                  : Colors.textDim,
+                  : node.status === 'failed' ? Colors.error : Colors.textDim,
                 fontSize: FontSize.sm, fontWeight: '700',
               }}>
-                {node.status === 'completed' ? '✓ مكتمل' :
-                 node.status === 'running' ? '▶ يعمل...' :
-                 node.status === 'failed' ? '✗ فشل' :
-                 '— في الانتظار'}
+                {node.status === 'completed' ? '✓ مكتمل' : node.status === 'running' ? '▶ يعمل...' : node.status === 'failed' ? '✗ فشل' : '— في الانتظار'}
               </Text>
             </View>
           </View>
@@ -615,17 +825,13 @@ function InspectorPanel({
   );
 }
 
-// ── Library Quick Panel (Scripts/Selectors/Recordings) ───────────────
-function LibraryQuickPanel({
-  scripts, selectors, recordings, onAttachToNode, onClose,
-}: {
+// ── Library Quick Panel ─────────────────────────────────────────
+function LibraryQuickPanel({ scripts, selectors, recordings, onAttachToNode, onClose }: {
   scripts: Script[]; selectors: Selector[]; recordings: Recording[];
-  onAttachToNode: (s: AttachedScript) => void;
-  onClose: () => void;
+  onAttachToNode: (s: AttachedScript) => void; onClose: () => void;
 }) {
   const [tab, setTab] = useState<'scripts' | 'selectors' | 'recordings'>('scripts');
   const [search, setSearch] = useState('');
-
   return (
     <View style={styles.libPanel}>
       <View style={styles.libPanelHeader}>
@@ -637,66 +843,76 @@ function LibraryQuickPanel({
       </View>
       <View style={styles.libTabRow}>
         {(['scripts', 'selectors', 'recordings'] as const).map(t => (
-          <Pressable key={t} onPress={() => setTab(t)}
-            style={[styles.libTab, tab === t && styles.libTabActive]}>
+          <Pressable key={t} onPress={() => setTab(t)} style={[styles.libTab, tab === t && styles.libTabActive]}>
             <Text style={[styles.libTabText, tab === t && styles.libTabTextActive]}>
-              {t === 'scripts' ? 'سكريبتات' : t === 'selectors' ? 'Selectors' : 'تسجيلات'}
+              {t === 'scripts' ? `سكريبت (${scripts.length})` : t === 'selectors' ? `Sel (${selectors.length})` : `Rec (${recordings.length})`}
             </Text>
           </Pressable>
         ))}
       </View>
       <View style={styles.libSearchRow}>
         <MaterialCommunityIcons name="magnify" size={12} color={Colors.textDim} />
-        <TextInput value={search} onChangeText={setSearch}
-          placeholder="بحث..." placeholderTextColor={Colors.textDim}
-          style={styles.libSearchInput} />
+        <TextInput value={search} onChangeText={setSearch} placeholder="بحث..." placeholderTextColor={Colors.textDim} style={styles.libSearchInput} />
       </View>
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-        {tab === 'scripts' && scripts
-          .filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase()))
-          .map(s => (
-            <Pressable key={s.id}
-              onPress={() => onAttachToNode({ nodeId: '', lang: 'javascript', code: s.code, name: s.name })}
-              style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
-              <MaterialCommunityIcons name="code-braces" size={14} color="#F0DB4F" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.libItemName}>{s.name}</Text>
-                <Text style={styles.libItemDesc} numberOfLines={1}>{s.description}</Text>
-              </View>
-              <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
-            </Pressable>
-          ))
-        }
-        {tab === 'selectors' && selectors
-          .filter(s => !search || s.selector.includes(search) || s.name.toLowerCase().includes(search.toLowerCase()))
-          .map(s => (
-            <Pressable key={s.id}
-              onPress={() => onAttachToNode({ nodeId: '', lang: 'javascript', code: `document.querySelector('${s.selector}')`, name: s.name })}
-              style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
-              <MaterialCommunityIcons name="crosshairs-gps" size={14} color={Colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.libItemName}>{s.name}</Text>
-                <Text style={[styles.libItemDesc, { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }]} numberOfLines={1}>{s.selector}</Text>
-              </View>
-              <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
-            </Pressable>
-          ))
-        }
-        {tab === 'recordings' && recordings
-          .filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase()))
-          .map(r => (
-            <Pressable key={r.id}
-              onPress={() => onAttachToNode({ nodeId: '', lang: 'recording', code: r.steps.join('\n'), name: r.name, recordingId: r.id })}
-              style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
-              <MaterialCommunityIcons name="record-circle" size={14} color={Colors.error} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.libItemName}>{r.name}</Text>
-                <Text style={styles.libItemDesc} numberOfLines={1}>{r.steps.length} خطوة · {r.duration}</Text>
-              </View>
-              <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
-            </Pressable>
-          ))
-        }
+        {tab === 'scripts' && scripts.filter(s => !search || s.name.toLowerCase().includes(search.toLowerCase())).map(s => (
+          <Pressable key={s.id} onPress={() => onAttachToNode({ nodeId: '', lang: 'javascript', code: s.code, name: s.name })}
+            style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
+            <MaterialCommunityIcons name="code-braces" size={14} color="#F0DB4F" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.libItemName}>{s.name}</Text>
+              <Text style={styles.libItemDesc} numberOfLines={1}>{s.description}</Text>
+            </View>
+            <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
+          </Pressable>
+        ))}
+        {tab === 'selectors' && selectors.filter(s => !search || s.selector.includes(search) || s.name.toLowerCase().includes(search.toLowerCase())).map(s => (
+          <Pressable key={s.id} onPress={() => onAttachToNode({ nodeId: '', lang: 'javascript', code: `document.querySelector('${s.selector}')`, name: s.name })}
+            style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
+            <MaterialCommunityIcons name="crosshairs-gps" size={14} color={Colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.libItemName}>{s.name}</Text>
+              <Text style={[styles.libItemDesc, { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }]} numberOfLines={1}>{s.selector}</Text>
+            </View>
+            <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
+          </Pressable>
+        ))}
+        {tab === 'recordings' && recordings.filter(r => !search || r.name.toLowerCase().includes(search.toLowerCase())).map(r => (
+          <Pressable key={r.id} onPress={() => onAttachToNode({ nodeId: '', lang: 'recording', code: r.steps.join('\n'), name: r.name, recordingId: r.id })}
+            style={({ pressed }) => [styles.libItem, pressed && { opacity: 0.8 }]}>
+            <MaterialCommunityIcons name="record-circle" size={14} color={Colors.error} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.libItemName}>{r.name}</Text>
+              <Text style={styles.libItemDesc} numberOfLines={1}>{r.steps.length} خطوة · {r.duration}</Text>
+            </View>
+            <MaterialCommunityIcons name="plus-circle-outline" size={14} color={Colors.primary} />
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+// ── Execution History Panel ─────────────────────────────────────
+function ExecutionHistoryPanel({ logs, onClose }: { logs: { text: string; type: string }[]; onClose: () => void }) {
+  return (
+    <View style={styles.historyPanel}>
+      <View style={styles.historyHeader}>
+        <MaterialCommunityIcons name="history" size={14} color={Colors.primary} />
+        <Text style={styles.historyTitle}>سجل التنفيذ ({logs.length})</Text>
+        <Pressable onPress={onClose} style={{ marginLeft: 'auto' as any }}>
+          <MaterialCommunityIcons name="close" size={14} color={Colors.textMuted} />
+        </Pressable>
+      </View>
+      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+        {logs.slice(-100).reverse().map((l, i) => (
+          <Text key={i} style={[styles.historyLine, {
+            color: l.type === 'ok' ? Colors.completed : l.type === 'run' ? Colors.running : l.type === 'err' ? Colors.error : Colors.textMuted
+          }]}>
+            {l.type === 'ok' ? '✓' : l.type === 'run' ? '▶' : l.type === 'err' ? '✗' : '·'} {l.text}
+          </Text>
+        ))}
+        {logs.length === 0 && <Text style={styles.historyEmpty}>لا يوجد سجل بعد</Text>}
       </ScrollView>
     </View>
   );
@@ -721,21 +937,29 @@ export default function GraphScreen() {
   const [showAI, setShowAI] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showLib, setShowLib] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [loopExpanded, setLoopExpanded] = useState(true);
   const [isDryRun, setIsDryRun] = useState(false);
   const [localStep, setLocalStep] = useState(0);
   const [localLogs, setLocalLogs] = useState<{ text: string; type: string }[]>([]);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [execSpeed, setExecSpeed] = useState<ExecSpeed>('normal');
+  const [zoom, setZoom] = useState(1);
+  const [nodeSearch, setNodeSearch] = useState('');
+  const [showNodeSearch, setShowNodeSearch] = useState(false);
+  const [nodeResults, setNodeResults] = useState<Record<string, NodeResult>>({});
 
   // Script attachment state
   const [attachedScripts, setAttachedScripts] = useState<Record<string, AttachedScript>>({});
   const [showScriptEditor, setShowScriptEditor] = useState(false);
   const [showRecordingPick, setShowRecordingPick] = useState(false);
   const [scriptEditorNodeId, setScriptEditorNodeId] = useState('');
+  const [showPythonExecutor, setShowPythonExecutor] = useState(false);
 
   // Breakpoints
   const [breakpointHit, setBreakpointHit] = useState<BreakpointInfo | null>(null);
   const breakpointResumeRef = useRef<(() => void) | null>(null);
+  const [nodeBreakpoints, setNodeBreakpoints] = useState<Set<string>>(new Set());
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -750,12 +974,11 @@ export default function GraphScreen() {
     );
     pulseRef.current.start();
   };
-
   const stopPulse = () => { pulseRef.current?.stop(); pulseAnim.setValue(1); };
 
   const addLog = useCallback((msg: string, type = 'info') => {
     const t = new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setLocalLogs(prev => [...prev.slice(-80), { text: `${t} — ${msg}`, type }]);
+    setLocalLogs(prev => [...prev.slice(-100), { text: `${t} — ${msg}`, type }]);
   }, []);
 
   const selectedNode = graphNodes.find(n => n.id === selectedId) || null;
@@ -764,46 +987,46 @@ export default function GraphScreen() {
   const progress = graphNodes.length > 0 ? completedCount / graphNodes.length : 0;
   const currentRunningId = currentNodeId || graphNodes.find(n => n.status === 'running')?.id;
 
-  // Toggle breakpoint on a node
+  // Build graph context for Python scripts
+  const graphContext = {
+    project_idea: projectIdea || 'Unknown',
+    nodes_count: graphNodes.length,
+    completed_count: completedCount,
+    current_node: currentRunningId || 'none',
+    files_count: Object.keys(nodeResults).length,
+  };
+
+  // Node search filter
+  const searchMatchIds = nodeSearch.trim()
+    ? new Set(graphNodes.filter(n => {
+        const def = NODE_DEFINITIONS.find(d => d.type === n.type);
+        return n.label?.toLowerCase().includes(nodeSearch.toLowerCase()) ||
+               def?.label.toLowerCase().includes(nodeSearch.toLowerCase()) ||
+               def?.category.toLowerCase().includes(nodeSearch.toLowerCase());
+      }).map(n => n.id))
+    : null;
+
   const toggleBreakpoint = (nodeId: string) => {
     const node = graphNodes.find(n => n.id === nodeId);
     if (!node) return;
-    const now = !node.isBreakpoint;
-    updateNodeStatus(nodeId, node.status || 'idle');
-    // We modify the node directly via addGraphNode trick since we can't update arbitrary fields
-    // Use a workaround: store breakpoints in a separate set
     setNodeBreakpoints(prev => {
       const next = new Set(prev);
-      if (next.has(nodeId)) next.delete(nodeId);
-      else next.add(nodeId);
+      if (next.has(nodeId)) { next.delete(nodeId); addLog(`⚪ BP محذوف: ${node.label}`, 'info'); }
+      else { next.add(nodeId); addLog(`🔴 BP مُضاف: ${node.label}`, 'run'); }
       return next;
     });
-    addLog(now ? `🔴 Breakpoint مضاف: ${node.label}` : `⚪ Breakpoint محذوف: ${node.label}`, now ? 'run' : 'info');
-    addNotification({ type: now ? 'warning' : 'info', title: now ? 'Breakpoint مُضاف' : 'Breakpoint محذوف', message: node.label || nodeId, screen: 'graph' });
   };
 
-  const [nodeBreakpoints, setNodeBreakpoints] = useState<Set<string>>(new Set());
-
-  // Demo execution with breakpoint support
   const handleRun = () => {
     if (effectivelyRunning) {
       stopPipeline();
-      intervalRef.current && clearInterval(intervalRef.current);
-      setIsRunning(false);
-      setIsPaused(false);
-      setLocalStep(0);
-      setBreakpointHit(null);
-      stopPulse();
+      intervalRef.current && clearTimeout(intervalRef.current as any);
+      setIsRunning(false); setIsPaused(false); setLocalStep(0); setBreakpointHit(null); stopPulse();
       graphNodes.forEach(n => updateNodeStatus(n.id, 'idle'));
       addLog('⏹ إيقاف', 'err');
       return;
     }
-    if (isPaused) {
-      setIsPaused(false);
-      startPulse();
-      addLog('▶ استئناف', 'run');
-      return;
-    }
+    if (isPaused) { setIsPaused(false); startPulse(); addLog('▶ استئناف', 'run'); return; }
 
     if (projectIdea && selectedModelUrl && !isDryRun) {
       startPulse();
@@ -812,17 +1035,18 @@ export default function GraphScreen() {
       return;
     }
 
-    // Demo simulation with breakpoints
+    // Demo simulation with breakpoints + speed + Python execution
     setIsRunning(true);
     setLocalStep(0);
     setBreakpointHit(null);
     startPulse();
-    addLog(isDryRun ? '🔁 محاكاة Dry Run مع Breakpoints' : '▶ تشغيل Demo', 'run');
+    addLog(isDryRun ? '🔁 محاكاة Dry Run' : '▶ تشغيل Demo', 'run');
 
     let step = 0;
     const ids = graphNodes.map(n => n.id);
+    const speedMs = SPEED_MS[execSpeed];
 
-    const runStep = () => {
+    const runStep = async () => {
       if (step >= ids.length) {
         setIsRunning(false);
         stopPulse();
@@ -834,21 +1058,39 @@ export default function GraphScreen() {
 
       const currentNode = graphNodes[step];
       const def = NODE_DEFINITIONS.find(d => d.type === currentNode?.type);
-
       if (step > 0) updateNodeStatus(ids[step - 1], 'completed');
       updateNodeStatus(ids[step], 'running');
       setLocalStep(step + 1);
 
       const nodeId = ids[step];
       const nodeLabel = currentNode?.label || def?.label || nodeId;
+      const startTime = Date.now();
 
       // Execute attached script
       if (attachedScripts[nodeId]) {
         const as = attachedScripts[nodeId];
         addLog(`📎 تشغيل ${as.lang === 'recording' ? 'Recording' : as.lang}: "${as.name}"`, 'run');
+
         if (as.lang === 'javascript' && webViewBridge) {
           webViewBridge.injectJS(as.code);
           addLog(`✓ JS injected في Browser`, 'ok');
+        } else if (as.lang === 'python') {
+          addLog(`🐍 تشغيل Python: "${as.name}"`, 'run');
+          try {
+            const pyResult = await pythonRunner.execute(as.code, { ...graphContext, node_id: nodeId, node_label: nodeLabel });
+            const elapsed = Date.now() - startTime;
+            if (pyResult.success) {
+              addLog(`✓ Python OK: ${pyResult.stdout.split('\n')[0]}`, 'ok');
+              setNodeResults(prev => ({
+                ...prev,
+                [nodeId]: { nodeId, output: pyResult.stdout || '(no output)', timestamp: new Date().toLocaleTimeString(), duration: elapsed },
+              }));
+            } else {
+              addLog(`✗ Python Error: ${pyResult.stderr}`, 'err');
+            }
+          } catch (e: any) {
+            addLog(`✗ Python failed: ${e?.message}`, 'err');
+          }
         } else if (as.lang === 'recording') {
           const steps = as.code.split('\n').filter(Boolean);
           addLog(`▶ Recording: ${steps.length} خطوة`, 'run');
@@ -861,53 +1103,40 @@ export default function GraphScreen() {
       if (nodeBreakpoints.has(nodeId)) {
         addLog(`⏸ Breakpoint: ${nodeLabel}`, 'run');
         setBreakpointHit({
-          nodeId,
-          label: nodeLabel,
+          nodeId, label: nodeLabel,
           context: {
-            step: step + 1,
-            totalSteps: ids.length,
-            nodeType: currentNode?.type || '?',
-            hasScript: !!attachedScripts[nodeId],
+            step: step + 1, totalSteps: ids.length, nodeType: currentNode?.type || '?',
+            hasScript: !!attachedScripts[nodeId], speed: execSpeed,
             ...(attachedScripts[nodeId] ? { scriptLang: attachedScripts[nodeId].lang } : {}),
           },
         });
         setIsPaused(true);
         stopPulse();
-
         breakpointResumeRef.current = () => {
           setBreakpointHit(null);
           setIsPaused(false);
           startPulse();
           step++;
-          intervalRef.current = setTimeout(runStep, 600);
+          intervalRef.current = setTimeout(runStep, speedMs) as any;
         };
         return;
       }
 
       step++;
-      intervalRef.current = setTimeout(runStep, 700);
+      intervalRef.current = setTimeout(runStep, speedMs) as any;
     };
 
     runStep();
   };
 
-  const handleBreakpointContinue = () => {
-    if (breakpointResumeRef.current) breakpointResumeRef.current();
-  };
-
+  const handleBreakpointContinue = () => { if (breakpointResumeRef.current) breakpointResumeRef.current(); };
   const handleBreakpointStepOver = () => {
-    setBreakpointHit(null);
-    setIsPaused(false);
-    startPulse();
+    setBreakpointHit(null); setIsPaused(false); startPulse();
     addLog('⏩ Step Over', 'info');
     if (breakpointResumeRef.current) breakpointResumeRef.current();
   };
-
   const handleBreakpointAbort = () => {
-    setBreakpointHit(null);
-    setIsPaused(false);
-    setIsRunning(false);
-    stopPulse();
+    setBreakpointHit(null); setIsPaused(false); setIsRunning(false); stopPulse();
     intervalRef.current && clearTimeout(intervalRef.current as any);
     graphNodes.forEach(n => { if (n.status === 'running') updateNodeStatus(n.id, 'idle'); });
     addLog('⏹ Pipeline مُلغى عند Breakpoint', 'err');
@@ -921,14 +1150,21 @@ export default function GraphScreen() {
   };
 
   const logsToShow = isPipelineRunning
-    ? pipelineLogs.map(l => ({
-        text: `${l.timestamp} — ${l.message}`,
-        type: l.type === 'success' ? 'ok' : l.type === 'running' ? 'run' : l.type === 'error' ? 'err' : 'info',
-      }))
+    ? pipelineLogs.map(l => ({ text: `${l.timestamp} — ${l.message}`, type: l.type === 'success' ? 'ok' : l.type === 'running' ? 'run' : l.type === 'error' ? 'err' : 'info' }))
     : localLogs;
 
   const totalBreakpoints = nodeBreakpoints.size;
   const attachedCount = Object.keys(attachedScripts).length;
+
+  // Category stats
+  const catStats = Object.entries(
+    graphNodes.reduce((acc, n) => {
+      const def = NODE_DEFINITIONS.find(d => d.type === n.type);
+      const cat = def?.category || 'Other';
+      acc[cat] = (acc[cat] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>)
+  );
 
   if (graphMode === 'yaml') {
     return <GraphYAMLView nodes={graphNodes} edges={graphEdges} onClose={() => setGraphMode('visual')} insets={insets} />;
@@ -950,49 +1186,75 @@ export default function GraphScreen() {
           {isPaused && (
             <View style={[styles.runningBadge, { backgroundColor: Colors.warning + '22' }]}>
               <MaterialCommunityIcons name="pause" size={10} color={Colors.warning} />
-              <Text style={[styles.runText, { color: Colors.warning }]}>
-                {breakpointHit ? 'Breakpoint' : 'متوقف'}
-              </Text>
+              <Text style={[styles.runText, { color: Colors.warning }]}>{breakpointHit ? 'Breakpoint' : 'متوقف'}</Text>
             </View>
           )}
         </View>
         <View style={styles.headerRight}>
-          {/* Breakpoints badge */}
+          {/* Stats badges */}
           {totalBreakpoints > 0 && (
             <View style={styles.bpCountBadge}>
               <MaterialCommunityIcons name="debug-step-over" size={11} color="#FF4081" />
               <Text style={styles.bpCountText}>{totalBreakpoints}</Text>
             </View>
           )}
-          {/* Scripts badge */}
           {attachedCount > 0 && (
             <View style={styles.scriptCountBadge}>
               <MaterialCommunityIcons name="code-braces" size={11} color="#F0DB4F" />
               <Text style={styles.scriptCountText}>{attachedCount}</Text>
             </View>
           )}
-          <Pressable onPress={() => setIsDryRun(v => !v)} style={[styles.hBtn, isDryRun && styles.hBtnActive]}>
+
+          {/* Speed control */}
+          <Pressable onPress={() => {
+            const speeds: ExecSpeed[] = ['slow', 'normal', 'fast', 'instant'];
+            const next = speeds[(speeds.indexOf(execSpeed) + 1) % speeds.length];
+            setExecSpeed(next);
+          }} style={[styles.hBtn, { backgroundColor: SPEED_COLOR[execSpeed] + '20' }]}>
+            <MaterialCommunityIcons name="speedometer" size={13} color={SPEED_COLOR[execSpeed]} />
+            <Text style={[styles.speedText, { color: SPEED_COLOR[execSpeed] }]}>{execSpeed.charAt(0).toUpperCase()}</Text>
+          </Pressable>
+
+          {/* Zoom controls */}
+          <Pressable onPress={() => setZoom(v => Math.min(1.5, v + 0.1))} style={styles.hBtn}>
+            <MaterialCommunityIcons name="magnify-plus-outline" size={14} color={Colors.textMuted} />
+          </Pressable>
+          <Pressable onPress={() => setZoom(v => Math.max(0.5, v - 0.1))} style={styles.hBtn}>
+            <MaterialCommunityIcons name="magnify-minus-outline" size={14} color={Colors.textMuted} />
+          </Pressable>
+
+          {/* Node search */}
+          <Pressable onPress={() => setShowNodeSearch(v => !v)} style={[styles.hBtn, showNodeSearch && styles.hBtnActive]}>
+            <MaterialCommunityIcons name="magnify" size={14} color={showNodeSearch ? Colors.primary : Colors.textMuted} />
+          </Pressable>
+
+          {/* Python executor */}
+          <Pressable onPress={() => setShowPythonExecutor(true)} style={[styles.hBtn, { backgroundColor: '#3776AB' + '20' }]}>
+            <MaterialCommunityIcons name="language-python" size={14} color="#3776AB" />
+          </Pressable>
+
+          <Pressable onPress={() => { setIsDryRun(v => !v); }} style={[styles.hBtn, isDryRun && styles.hBtnActive]}>
             <MaterialCommunityIcons name="test-tube" size={15} color={isDryRun ? Colors.accent : Colors.textMuted} />
           </Pressable>
           <Pressable onPress={() => setGraphMode('yaml')} style={styles.hBtn}>
             <MaterialCommunityIcons name="code-json" size={15} color={Colors.textMuted} />
           </Pressable>
-          <Pressable onPress={() => { setShowLib(v => !v); setShowAI(false); setSelectedId(null); }}
+          <Pressable onPress={() => { setShowLib(v => !v); setShowAI(false); setSelectedId(null); setShowHistory(false); }}
             style={[styles.hBtn, showLib && styles.hBtnActive]}>
             <MaterialCommunityIcons name="bookshelf" size={15} color={showLib ? Colors.primary : Colors.textMuted} />
           </Pressable>
-          <Pressable onPress={() => { setShowAI(v => !v); setShowLib(false); setSelectedId(null); }}
+          <Pressable onPress={() => { setShowAI(v => !v); setShowLib(false); setSelectedId(null); setShowHistory(false); }}
             style={[styles.hBtn, showAI && styles.hBtnActive]}>
             <MaterialCommunityIcons name="auto-fix" size={15} color={showAI ? Colors.primary : Colors.textMuted} />
           </Pressable>
           <Pressable onPress={() => setShowAdd(true)} style={styles.hBtn}>
             <MaterialCommunityIcons name="plus" size={17} color={Colors.textMuted} />
           </Pressable>
-          <Pressable onPress={() => setShowLogs(v => !v)} style={[styles.hBtn, showLogs && styles.hBtnActive]}>
+          <Pressable onPress={() => { setShowLogs(v => !v); setShowHistory(false); }} style={[styles.hBtn, showLogs && styles.hBtnActive]}>
             <MaterialCommunityIcons name="console" size={15} color={showLogs ? Colors.primary : Colors.textMuted} />
           </Pressable>
           {effectivelyRunning && !isPipelineRunning && !breakpointHit && (
-            <Pressable onPress={() => { setIsPaused(v => !v); }} style={[styles.hBtn, { backgroundColor: Colors.warning + '20' }]}>
+            <Pressable onPress={() => setIsPaused(v => !v)} style={[styles.hBtn, { backgroundColor: Colors.warning + '20' }]}>
               <MaterialCommunityIcons name={isPaused ? 'play' : 'pause'} size={15} color={Colors.warning} />
             </Pressable>
           )}
@@ -1005,13 +1267,54 @@ export default function GraphScreen() {
         </View>
       </View>
 
+      {/* Node search bar */}
+      {showNodeSearch && (
+        <View style={styles.nodeSearchBar}>
+          <MaterialCommunityIcons name="magnify" size={14} color={Colors.textMuted} />
+          <TextInput
+            value={nodeSearch} onChangeText={setNodeSearch}
+            placeholder="بحث في العقد... (اسم، نوع، فئة)"
+            placeholderTextColor={Colors.textDim} style={styles.nodeSearchInput}
+            autoFocus autoCapitalize="none"
+          />
+          {nodeSearch.length > 0 && (
+            <>
+              <Text style={styles.nodeSearchCount}>
+                {graphNodes.filter(n => searchMatchIds?.has(n.id)).length} نتيجة
+              </Text>
+              <Pressable onPress={() => setNodeSearch('')}>
+                <MaterialCommunityIcons name="close-circle" size={14} color={Colors.textDim} />
+              </Pressable>
+            </>
+          )}
+        </View>
+      )}
+
+      {/* Category stats bar */}
+      <View style={styles.catStatsBar}>
+        {catStats.map(([cat, count]) => (
+          <View key={cat} style={styles.catStatItem}>
+            <MaterialCommunityIcons name={CAT_ICON[cat] as any || 'circle'} size={10} color={CAT_COLOR[cat] || Colors.textDim} />
+            <Text style={[styles.catStatText, { color: CAT_COLOR[cat] || Colors.textDim }]}>{count}</Text>
+          </View>
+        ))}
+        <View style={{ flex: 1 }} />
+        {zoom !== 1 && (
+          <Pressable onPress={() => setZoom(1)} style={styles.zoomReset}>
+            <Text style={styles.zoomText}>{Math.round(zoom * 100)}%</Text>
+            <MaterialCommunityIcons name="close" size={9} color={Colors.textDim} />
+          </Pressable>
+        )}
+      </View>
+
       {/* Progress bar */}
       {effectivelyRunning && (
         <View style={styles.progressWrap}>
           <View style={[styles.progressBar, { width: `${progress * 100}%` as any }]} />
           <Text style={styles.progressText}>
             {Math.round(progress * 100)}% — {completedCount}/{graphNodes.length} عقدة
-            {isPipelineRunning && pipelineLogs.length > 0 && ` — ${pipelineLogs[pipelineLogs.length - 1]?.message?.substring(0, 40)}`}
+            {` — ${execSpeed}`}
+            {isPipelineRunning && pipelineLogs.length > 0 && ` — ${pipelineLogs[pipelineLogs.length - 1]?.message?.substring(0, 35)}`}
           </Text>
         </View>
       )}
@@ -1028,7 +1331,7 @@ export default function GraphScreen() {
 
       {/* Body */}
       <View style={styles.body}>
-        {/* Library quick panel */}
+        {/* Library / AI / History panels */}
         {showLib && (
           <View style={styles.sidePanel}>
             <LibraryQuickPanel
@@ -1038,10 +1341,10 @@ export default function GraphScreen() {
               onAttachToNode={(s) => {
                 if (selectedId) {
                   setAttachedScripts(prev => ({ ...prev, [selectedId]: { ...s, nodeId: selectedId } }));
-                  addLog(`📎 ربط "${s.name}" → عقدة ${selectedId}`, 'ok');
-                  addNotification({ type: 'success', title: 'Script مربوط', message: `"${s.name}" → العقدة المختارة`, screen: 'graph' });
+                  addLog(`📎 ربط "${s.name}" → ${selectedId}`, 'ok');
+                  addNotification({ type: 'success', title: 'Script مربوط', message: s.name, screen: 'graph' });
                 } else {
-                  addNotification({ type: 'warning', title: 'اختر عقدة أولاً', message: 'انقر على عقدة لربط الـ Script بها', screen: 'graph' });
+                  addNotification({ type: 'warning', title: 'اختر عقدة أولاً', message: 'انقر على عقدة لربط الـ Script', screen: 'graph' });
                 }
               }}
               onClose={() => setShowLib(false)}
@@ -1049,7 +1352,6 @@ export default function GraphScreen() {
           </View>
         )}
 
-        {/* AI assistant */}
         {showAI && !showLib && (
           <View style={styles.sidePanel}>
             <GraphAIAssistant
@@ -1059,6 +1361,12 @@ export default function GraphScreen() {
               }}
               onClose={() => setShowAI(false)}
             />
+          </View>
+        )}
+
+        {showHistory && !showLib && !showAI && (
+          <View style={styles.sidePanel}>
+            <ExecutionHistoryPanel logs={localLogs} onClose={() => setShowHistory(false)} />
           </View>
         )}
 
@@ -1081,6 +1389,12 @@ export default function GraphScreen() {
                 <Text style={styles.scriptSummaryText}>{attachedCount} scripts</Text>
               </View>
             )}
+            {Object.keys(nodeResults).length > 0 && (
+              <View style={[styles.scriptSummary, { backgroundColor: Colors.success + '15' }]}>
+                <MaterialCommunityIcons name="check-all" size={10} color={Colors.success} />
+                <Text style={[styles.scriptSummaryText, { color: Colors.success }]}>{Object.keys(nodeResults).length} results</Text>
+              </View>
+            )}
           </View>
 
           {graphNodes.map((node, index) => {
@@ -1093,14 +1407,16 @@ export default function GraphScreen() {
             const hasScript = !!attachedScripts[node.id];
             const hasBp = nodeBreakpoints.has(node.id);
             const isBpHit = breakpointHit?.nodeId === node.id;
+            const isSearchMatch = searchMatchIds ? searchMatchIds.has(node.id) : true;
+            const isSearchDim = searchMatchIds && !searchMatchIds.has(node.id) && nodeSearch.length > 0;
 
             if (isInLoop && !loopExpanded) return null;
 
             return (
-              <View key={node.id}>
+              <View key={node.id} style={isSearchDim ? { opacity: 0.25 } : undefined}>
                 {index > 0 && <Connector label={edge?.label} isInLoop={isInLoop} isActive={isActive} />}
 
-                {/* Script/Recording indicator above block */}
+                {/* Script indicator */}
                 {hasScript && (
                   <View style={styles.scriptIndicator}>
                     <MaterialCommunityIcons
@@ -1110,18 +1426,16 @@ export default function GraphScreen() {
                     />
                     <Text style={[styles.scriptIndicatorText, {
                       color: attachedScripts[node.id].lang === 'recording' ? Colors.error : attachedScripts[node.id].lang === 'python' ? '#3776AB' : '#F0DB4F',
-                    }]}>
-                      {attachedScripts[node.id].name}
-                    </Text>
-                    <Pressable onPress={() => {
-                      setScriptEditorNodeId(node.id);
-                      setShowScriptEditor(true);
-                    }} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                    }]}>{attachedScripts[node.id].name}</Text>
+                    {attachedScripts[node.id].lang === 'python' && (
+                      <View style={[styles.pyBadge]}>
+                        <Text style={styles.pyBadgeText}>🐍</Text>
+                      </View>
+                    )}
+                    <Pressable onPress={() => { setScriptEditorNodeId(node.id); setShowScriptEditor(true); }} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
                       <MaterialCommunityIcons name="pencil" size={10} color={Colors.textDim} />
                     </Pressable>
-                    <Pressable onPress={() => setAttachedScripts(prev => {
-                      const next = { ...prev }; delete next[node.id]; return next;
-                    })} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                    <Pressable onPress={() => setAttachedScripts(prev => { const next = { ...prev }; delete next[node.id]; return next; })} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
                       <MaterialCommunityIcons name="close" size={10} color={Colors.error} />
                     </Pressable>
                   </View>
@@ -1135,33 +1449,40 @@ export default function GraphScreen() {
                   </View>
                 )}
 
-                {isInLoop ? (
-                  <View style={styles.loopRow}>
-                    <View style={styles.loopSideline} />
-                    <View style={{ flex: 1 }}>
-                      <PipelineBlock
-                        node={node} index={index}
-                        isSelected={selectedId === node.id}
-                        isInLoop isLoopHeader={false} loopExpanded={loopExpanded}
-                        pulseAnim={isThisRunning ? pulseAnim : undefined}
-                        onPress={() => setSelectedId(prev => prev === node.id ? null : node.id)}
-                        hasBreakpoint={hasBp}
-                        isBreakpointHit={isBpHit}
-                      />
-                    </View>
-                  </View>
-                ) : (
-                  <PipelineBlock
-                    node={node} index={index}
-                    isSelected={selectedId === node.id}
-                    isInLoop={false} isLoopHeader={isLoopNode} loopExpanded={loopExpanded}
-                    pulseAnim={isThisRunning ? pulseAnim : undefined}
-                    onPress={() => setSelectedId(prev => prev === node.id ? null : node.id)}
-                    onToggleLoop={() => setLoopExpanded(v => !v)}
-                    hasBreakpoint={hasBp}
-                    isBreakpointHit={isBpHit}
-                  />
+                {/* Search highlight border */}
+                {isSearchMatch && nodeSearch.length > 0 && (
+                  <View style={styles.searchHighlight} />
                 )}
+
+                <View style={[{ transform: [{ scale: zoom }] }]}>
+                  {isInLoop ? (
+                    <View style={styles.loopRow}>
+                      <View style={styles.loopSideline} />
+                      <View style={{ flex: 1 }}>
+                        <PipelineBlock
+                          node={node} index={index} isSelected={selectedId === node.id}
+                          isInLoop isLoopHeader={false} loopExpanded={loopExpanded}
+                          pulseAnim={isThisRunning ? pulseAnim : undefined}
+                          onPress={() => setSelectedId(prev => prev === node.id ? null : node.id)}
+                          hasBreakpoint={hasBp} isBreakpointHit={isBpHit}
+                          hasScript={hasScript} scriptLang={attachedScripts[node.id]?.lang}
+                          result={nodeResults[node.id]} zoom={zoom}
+                        />
+                      </View>
+                    </View>
+                  ) : (
+                    <PipelineBlock
+                      node={node} index={index} isSelected={selectedId === node.id}
+                      isInLoop={false} isLoopHeader={isLoopNode} loopExpanded={loopExpanded}
+                      pulseAnim={isThisRunning ? pulseAnim : undefined}
+                      onPress={() => setSelectedId(prev => prev === node.id ? null : node.id)}
+                      onToggleLoop={() => setLoopExpanded(v => !v)}
+                      hasBreakpoint={hasBp} isBreakpointHit={isBpHit}
+                      hasScript={hasScript} scriptLang={attachedScripts[node.id]?.lang}
+                      result={nodeResults[node.id]} zoom={zoom}
+                    />
+                  )}
+                </View>
 
                 {node.id === 'n16' && loopExpanded && (
                   <View style={styles.loopEnd}>
@@ -1184,34 +1505,32 @@ export default function GraphScreen() {
         </ScrollView>
 
         {/* Inspector panel */}
-        {selectedNode && !showLib && !showAI && (
+        {selectedNode && !showLib && !showAI && !showHistory && (
           <View style={styles.sidePanel}>
             <InspectorPanel
               node={selectedNode}
               attachedScript={attachedScripts[selectedNode.id]}
+              nodeResult={nodeResults[selectedNode.id]}
               onClose={() => setSelectedId(null)}
               onDelete={() => { removeGraphNode(selectedNode.id); setSelectedId(null); }}
               onToggleBreakpoint={() => toggleBreakpoint(selectedNode.id)}
-              onOpenScriptEditor={() => {
-                setScriptEditorNodeId(selectedNode.id);
-                setShowScriptEditor(true);
-              }}
-              onOpenRecordingPicker={() => {
-                setScriptEditorNodeId(selectedNode.id);
-                setShowRecordingPick(true);
-              }}
+              onOpenScriptEditor={() => { setScriptEditorNodeId(selectedNode.id); setShowScriptEditor(true); }}
+              onOpenRecordingPicker={() => { setScriptEditorNodeId(selectedNode.id); setShowRecordingPick(true); }}
             />
           </View>
         )}
       </View>
 
-      {/* Logs */}
+      {/* Logs panel */}
       {showLogs && (
         <View style={styles.logsPanel}>
           <View style={styles.logsHeader}>
             <MaterialCommunityIcons name="console" size={11} color={Colors.primary} />
             <Text style={styles.logsTitle}>سجل التنفيذ</Text>
             <Text style={styles.logsCount}>{logsToShow.length}</Text>
+            <Pressable onPress={() => { setShowHistory(true); setShowLogs(false); }} style={{ marginLeft: Spacing.sm }}>
+              <MaterialCommunityIcons name="history" size={13} color={Colors.textDim} />
+            </Pressable>
             <Pressable onPress={() => setLocalLogs([])} style={{ marginLeft: 'auto' as any }}>
               <Text style={styles.logsClear}>مسح</Text>
             </Pressable>
@@ -1232,52 +1551,50 @@ export default function GraphScreen() {
         <Text style={styles.statusSep}>·</Text>
         <Text style={[styles.statusItem, { color: Colors.completed }]}>{completedCount} مكتمل</Text>
         {totalBreakpoints > 0 && (
-          <>
-            <Text style={styles.statusSep}>·</Text>
-            <Text style={[styles.statusItem, { color: '#FF4081' }]}>{totalBreakpoints} BP</Text>
-          </>
+          <><Text style={styles.statusSep}>·</Text>
+          <Text style={[styles.statusItem, { color: '#FF4081' }]}>{totalBreakpoints} BP</Text></>
         )}
         {attachedCount > 0 && (
-          <>
-            <Text style={styles.statusSep}>·</Text>
-            <Text style={[styles.statusItem, { color: '#F0DB4F' }]}>{attachedCount} scripts</Text>
-          </>
+          <><Text style={styles.statusSep}>·</Text>
+          <Text style={[styles.statusItem, { color: '#F0DB4F' }]}>{attachedCount} scripts</Text></>
+        )}
+        {Object.keys(nodeResults).length > 0 && (
+          <><Text style={styles.statusSep}>·</Text>
+          <Text style={[styles.statusItem, { color: Colors.success }]}>{Object.keys(nodeResults).length} results</Text></>
         )}
         {effectivelyRunning && (
-          <>
-            <Text style={styles.statusSep}>·</Text>
-            <Text style={[styles.statusItem, { color: Colors.running }]}>
-              خطوة {executionStep || localStep}/{graphNodes.length}
-            </Text>
-          </>
+          <><Text style={styles.statusSep}>·</Text>
+          <Text style={[styles.statusItem, { color: Colors.running }]}>
+            خطوة {executionStep || localStep}/{graphNodes.length}
+          </Text></>
         )}
         <View style={{ flex: 1 }} />
-        {isPipelineRunning && <Text style={[styles.statusItem, { color: Colors.running }]}>Pipeline نشط</Text>}
-        {isDryRun && !effectivelyRunning && <Text style={[styles.statusItem, { color: Colors.accent }]}>Dry Run</Text>}
-        {!isPipelineRunning && !effectivelyRunning && <Text style={styles.statusItem}>جاهز</Text>}
+        <Text style={[styles.statusItem, { color: SPEED_COLOR[execSpeed] }]}>{execSpeed}</Text>
+        {isPipelineRunning && <Text style={[styles.statusItem, { color: Colors.running }]}> Pipeline نشط</Text>}
+        {isDryRun && !effectivelyRunning && <Text style={[styles.statusItem, { color: Colors.accent }]}> Dry Run</Text>}
+        {!isPipelineRunning && !effectivelyRunning && <Text style={styles.statusItem}> جاهز</Text>}
       </View>
 
-      {/* Add Node Modal */}
+      {/* Modals */}
       <AddNodeModal visible={showAdd} onAdd={(type) => {
         const def = NODE_DEFINITIONS.find(d => d.type === type);
         if (def) addGraphNode({ id: `n${Date.now()}`, type: type as NodeType, status: 'idle', label: def.label, config: {} });
       }} onClose={() => setShowAdd(false)} />
 
-      {/* Script Editor Modal */}
       <ScriptEditorModal
         visible={showScriptEditor}
         nodeId={scriptEditorNodeId}
         nodeLabel={graphNodes.find(n => n.id === scriptEditorNodeId)?.label || scriptEditorNodeId}
         attached={attachedScripts[scriptEditorNodeId]}
+        graphContext={graphContext}
         onSave={(s) => {
           setAttachedScripts(prev => ({ ...prev, [s.nodeId]: s }));
-          addLog(`💾 حُفظ "${s.name}" (${s.lang}) في عقدة ${s.nodeId}`, 'ok');
+          addLog(`💾 حُفظ "${s.name}" (${s.lang}) → ${s.nodeId}`, 'ok');
           addNotification({ type: 'success', title: 'Script محفوظ', message: s.name, screen: 'graph' });
         }}
         onClose={() => setShowScriptEditor(false)}
       />
 
-      {/* Recording Picker Modal */}
       <RecordingPickModal
         visible={showRecordingPick}
         nodeId={scriptEditorNodeId}
@@ -1290,11 +1607,26 @@ export default function GraphScreen() {
         }}
         onClose={() => setShowRecordingPick(false)}
       />
+
+      {/* Global Python Executor */}
+      {showPythonExecutor && (
+        <PythonExecutorPanel
+          nodeId="global"
+          nodeLabel="Global Python Console"
+          context={graphContext}
+          onClose={() => setShowPythonExecutor(false)}
+          onResult={(res) => {
+            addLog(`🐍 Python: ${res.success ? '✓ ' + res.stdout.split('\n')[0] : '✗ ' + res.stderr}`, res.success ? 'ok' : 'err');
+          }}
+        />
+      )}
     </View>
   );
 }
 
-// ───────────────────────── STYLES ────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// STYLES
+// ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
 
@@ -1304,7 +1636,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, flexWrap: 'wrap', flex: 1, justifyContent: 'flex-end' },
   headerTitle: { color: Colors.text, fontSize: FontSize.md, fontWeight: '700' },
   runningBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -1315,25 +1647,46 @@ const styles = StyleSheet.create({
   runText: { color: Colors.running, fontSize: FontSize.xs, fontWeight: '600' },
   hBtn: { width: 28, height: 28, borderRadius: Radius.sm, backgroundColor: Colors.surface2, alignItems: 'center', justifyContent: 'center' },
   hBtnActive: { backgroundColor: Colors.primaryDim },
+  speedText: { fontSize: 8, fontWeight: '800', marginTop: -1 },
   runBtn: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
     backgroundColor: Colors.success, borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md, paddingVertical: 5,
+    paddingHorizontal: Spacing.sm, paddingVertical: 5,
   },
   runBtnStop: { backgroundColor: Colors.error },
   runBtnText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '700' },
 
+  nodeSearchBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingVertical: 5,
+    backgroundColor: Colors.surface2, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  nodeSearchInput: { flex: 1, color: Colors.text, fontSize: FontSize.sm, paddingVertical: 2 },
+  nodeSearchCount: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: '700' },
+
+  catStatsBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingVertical: 4,
+    backgroundColor: Colors.surface2 + '80', borderBottomWidth: 1, borderBottomColor: Colors.border + '40',
+  },
+  catStatItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  catStatText: { fontSize: 9, fontWeight: '700' },
+  zoomReset: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    backgroundColor: Colors.surface, borderRadius: Radius.full,
+    paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: Colors.border,
+  },
+  zoomText: { color: Colors.textDim, fontSize: 9, fontWeight: '700' },
+
   bpCountBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#FF4081' + '20', borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 2,
+    backgroundColor: '#FF4081' + '20', borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 2,
     borderWidth: 1, borderColor: '#FF4081' + '40',
   },
   bpCountText: { color: '#FF4081', fontSize: 9, fontWeight: '700' },
   scriptCountBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#F0DB4F' + '20', borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 2,
+    backgroundColor: '#F0DB4F' + '20', borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 2,
     borderWidth: 1, borderColor: '#F0DB4F' + '40',
   },
   scriptCountText: { color: '#F0DB4F', fontSize: 9, fontWeight: '700' },
@@ -1346,31 +1699,20 @@ const styles = StyleSheet.create({
   progressBar: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: Colors.primary + '30' },
   progressText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: '700', paddingHorizontal: Spacing.lg, zIndex: 1 },
 
-  // Breakpoint panel
   bpPanel: {
     backgroundColor: '#FF4081' + '10', borderBottomWidth: 2, borderBottomColor: '#FF4081' + '60',
     borderTopWidth: 1, borderTopColor: '#FF4081' + '30',
   },
-  bpPanelHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
-  },
+  bpPanelHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm },
   bpPanelTitle: { color: '#FF4081', fontSize: FontSize.sm, fontWeight: '800' },
   bpPanelNode: { color: Colors.textMuted, fontSize: FontSize.xs, flex: 1, marginLeft: Spacing.xs },
   bpContextSection: { paddingHorizontal: Spacing.lg, paddingBottom: Spacing.xs },
   bpContextLabel: { color: Colors.textDim, fontSize: FontSize.xs, fontWeight: '700', marginBottom: 4 },
   bpContextBox: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
-  bpContextEmpty: { color: Colors.textDim, fontSize: FontSize.xs },
-  bpContextRow: {
-    flexDirection: 'row', gap: 3, backgroundColor: Colors.surface2,
-    borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 2,
-  },
+  bpContextRow: { flexDirection: 'row', gap: 3, backgroundColor: Colors.surface2, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 2 },
   bpContextKey: { color: Colors.textDim, fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   bpContextVal: { color: Colors.textMuted, fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  bpActions: {
-    flexDirection: 'row', gap: Spacing.sm,
-    paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, paddingTop: Spacing.xs,
-  },
+  bpActions: { flexDirection: 'row', gap: Spacing.sm, paddingHorizontal: Spacing.lg, paddingBottom: Spacing.md, paddingTop: Spacing.xs },
   bpActionBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
     borderRadius: Radius.md, paddingVertical: Spacing.sm, borderWidth: 1,
@@ -1391,18 +1733,21 @@ const styles = StyleSheet.create({
   pipelineTitleCount: { color: Colors.textDim, fontSize: FontSize.xs },
   bpSummary: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: '#FF4081' + '15', borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 1,
+    backgroundColor: '#FF4081' + '15', borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 1,
   },
   bpSummaryText: { color: '#FF4081', fontSize: 9, fontWeight: '700' },
   scriptSummary: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: '#F0DB4F' + '15', borderRadius: Radius.full,
-    paddingHorizontal: 5, paddingVertical: 1,
+    backgroundColor: '#F0DB4F' + '15', borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 1,
   },
   scriptSummaryText: { color: '#F0DB4F', fontSize: 9, fontWeight: '700' },
 
-  // Block styles
+  searchHighlight: {
+    position: 'absolute', top: 0, left: -4, right: -4, bottom: 0,
+    borderRadius: Radius.lg, borderWidth: 2, borderColor: Colors.primary + '60',
+    pointerEvents: 'none',
+  },
+
   block: {
     flexDirection: 'row', alignItems: 'stretch',
     backgroundColor: Colors.surface, borderRadius: Radius.lg,
@@ -1417,25 +1762,38 @@ const styles = StyleSheet.create({
   blockBreakpointHit: { borderColor: '#FF4081' + '90', backgroundColor: '#FF4081' + '08', borderWidth: 2 },
 
   bpDot: {
-    position: 'absolute', top: 8, right: 8,
-    width: 10, height: 10, borderRadius: 5,
-    backgroundColor: '#FF4081' + '50',
-    borderWidth: 1.5, borderColor: '#FF4081',
+    position: 'absolute', top: 8, right: 8, width: 10, height: 10, borderRadius: 5,
+    backgroundColor: '#FF4081' + '50', borderWidth: 1.5, borderColor: '#FF4081',
   },
   bpDotActive: { backgroundColor: '#FF4081' },
+  scriptDot: {
+    position: 'absolute', top: 8, right: 22, width: 6, height: 6, borderRadius: 3, opacity: 0.9,
+  },
   bpBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 2,
-    backgroundColor: '#FF4081' + '20', borderRadius: Radius.full,
-    paddingHorizontal: 4, paddingVertical: 1,
+    backgroundColor: '#FF4081' + '20', borderRadius: Radius.full, paddingHorizontal: 4, paddingVertical: 1,
   },
   bpBadgeText: { color: '#FF4081', fontSize: 8, fontWeight: '800' },
+  scriptBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 2,
+    borderRadius: Radius.full, paddingHorizontal: 4, paddingVertical: 1,
+  },
+  scriptBadgeText: { fontSize: 8, fontWeight: '700' },
   bpHitRow: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: '#FF4081' + '15', borderRadius: Radius.sm,
-    paddingHorizontal: Spacing.xs, paddingVertical: 2,
-    marginTop: 2,
+    paddingHorizontal: Spacing.xs, paddingVertical: 2, marginTop: 2,
   },
   bpHitText: { color: '#FF4081', fontSize: FontSize.xs, fontWeight: '700' },
+
+  nodeResultBox: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
+    backgroundColor: Colors.success + '10', borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.xs, paddingVertical: 2, marginTop: 2,
+    borderWidth: 1, borderColor: Colors.success + '25',
+  },
+  nodeResultText: { color: Colors.success, fontSize: 9, flex: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  nodeResultTime: { color: Colors.textDim, fontSize: 9 },
 
   blockLeft: { width: 34, alignItems: 'center', justifyContent: 'space-between', paddingVertical: Spacing.sm },
   stepBadge: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
@@ -1459,7 +1817,6 @@ const styles = StyleSheet.create({
   statusText: { fontSize: FontSize.xs, fontWeight: '600' },
   loopToggle: { padding: Spacing.md, alignSelf: 'center' },
 
-  // Script indicator
   scriptIndicator: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: Spacing.sm, paddingVertical: 2,
@@ -1467,17 +1824,14 @@ const styles = StyleSheet.create({
     marginBottom: 2, borderWidth: 1, borderColor: '#F0DB4F' + '20',
   },
   scriptIndicatorText: { fontSize: 9, fontWeight: '600', flex: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  pyBadge: { backgroundColor: '#3776AB' + '30', borderRadius: Radius.full, paddingHorizontal: 3, paddingVertical: 1 },
+  pyBadgeText: { fontSize: 9 },
 
-  // Connector
   connector: { alignItems: 'center', paddingVertical: 2 },
   connLine: { width: 1.5, height: 12, backgroundColor: Colors.border },
-  edgeLabelWrap: {
-    borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 1,
-    borderWidth: 1, backgroundColor: Colors.surface2, marginBottom: 1,
-  },
+  edgeLabelWrap: { borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 1, borderWidth: 1, backgroundColor: Colors.surface2, marginBottom: 1 },
   edgeLabel: { fontSize: 9 },
 
-  // Loop
   loopLabel: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginBottom: Spacing.sm },
   loopLabelText: { color: CAT_COLOR.Logic, fontSize: FontSize.xs, fontWeight: '700' },
   loopLabelLine: { flex: 1, height: 1, backgroundColor: CAT_COLOR.Logic + '30' },
@@ -1493,7 +1847,6 @@ const styles = StyleSheet.create({
   loopEndLine: { flex: 1, height: 1, backgroundColor: CAT_COLOR.Logic + '30' },
   loopEndText: { color: CAT_COLOR.Logic, fontSize: 9, fontWeight: '600' },
 
-  // Add block btn
   addBlockBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
     backgroundColor: Colors.surface, borderRadius: Radius.lg,
@@ -1502,7 +1855,6 @@ const styles = StyleSheet.create({
   },
   addBlockText: { color: Colors.textDim, fontSize: FontSize.sm },
 
-  // Logs
   logsPanel: { height: 140, backgroundColor: Colors.bg, borderTopWidth: 1, borderTopColor: Colors.border },
   logsHeader: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
@@ -1516,7 +1868,6 @@ const styles = StyleSheet.create({
   logsList: { paddingHorizontal: Spacing.lg, paddingVertical: Spacing.xs },
   logLine: { fontSize: FontSize.xs, lineHeight: 18, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 
-  // Status bar
   statusBarBottom: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
     paddingHorizontal: Spacing.lg, paddingTop: Spacing.xs,
@@ -1525,12 +1876,8 @@ const styles = StyleSheet.create({
   statusItem: { color: Colors.textMuted, fontSize: FontSize.xs },
   statusSep: { color: Colors.textDim, fontSize: FontSize.xs },
 
-  // Inspector
   inspector: { flex: 1, backgroundColor: Colors.surface },
-  inspHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
+  inspHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   inspIconWrap: { width: 36, height: 36, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
   inspName: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '700' },
   inspBtn: { width: 26, height: 26, borderRadius: Radius.sm, backgroundColor: Colors.surface2, alignItems: 'center', justifyContent: 'center' },
@@ -1538,194 +1885,184 @@ const styles = StyleSheet.create({
   inspSection: { gap: 6 },
   inspSectionTitle: { color: Colors.textDim, fontSize: FontSize.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
   inspDesc: { color: Colors.textMuted, fontSize: FontSize.sm, lineHeight: 20 },
-  inspConfigRow: {
-    flexDirection: 'row', gap: Spacing.sm,
-    backgroundColor: Colors.surface2, borderRadius: Radius.sm, padding: Spacing.sm,
-    borderWidth: 1, borderColor: Colors.border,
-  },
+  inspConfigRow: { flexDirection: 'row', gap: Spacing.sm, backgroundColor: Colors.surface2, borderRadius: Radius.sm, padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
   inspConfigKey: { color: Colors.textDim, fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', minWidth: 55 },
   inspConfigVal: { color: Colors.textMuted, fontSize: FontSize.xs, flex: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   inspStatusBox: { borderRadius: Radius.md, padding: Spacing.md, alignItems: 'center' },
 
-  // Breakpoint toggle in inspector
+  inspResultBox: {
+    backgroundColor: Colors.success + '08', borderRadius: Radius.md, padding: Spacing.sm,
+    borderWidth: 1, borderColor: Colors.success + '30', gap: 4,
+  },
+  inspResultHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  inspResultTitle: { color: Colors.success, fontSize: FontSize.xs, fontWeight: '700', flex: 1 },
+  inspResultTime: { color: Colors.textDim, fontSize: 9 },
+  inspResultOutput: {
+    color: Colors.textMuted, fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 14,
+  },
+
   inspBpToggle: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    padding: Spacing.sm, borderRadius: Radius.md,
-    backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border,
   },
   inspBpToggleActive: { backgroundColor: '#FF4081' + '15', borderColor: '#FF4081' + '50' },
   inspBpToggleText: { color: Colors.textMuted, fontSize: FontSize.xs, fontWeight: '600', flex: 1 },
   inspBpDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FF4081' },
 
-  // Attached script box
-  attachedScriptBox: {
-    backgroundColor: Colors.bg, borderRadius: Radius.md,
-    padding: Spacing.sm, borderWidth: 1, gap: Spacing.xs,
-  },
+  attachedScriptBox: { backgroundColor: Colors.bg, borderRadius: Radius.md, padding: Spacing.sm, borderWidth: 1, gap: Spacing.xs },
   attachedScriptTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
   attachedScriptName: { flex: 1, fontSize: FontSize.xs, fontWeight: '700' },
   attachedLangPill: { borderRadius: Radius.full, paddingHorizontal: 5, paddingVertical: 1 },
   attachedLangText: { fontSize: 8, fontWeight: '700' },
-  attachedScriptCode: {
-    color: Colors.textMuted, fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 14,
-  },
-  attachedEditBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 3, alignSelf: 'flex-end',
-    backgroundColor: Colors.primaryDim, borderRadius: Radius.sm,
-    paddingHorizontal: Spacing.sm, paddingVertical: 2,
-  },
+  attachedScriptCode: { color: Colors.textMuted, fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 14 },
+  attachedEditBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, alignSelf: 'flex-end', backgroundColor: Colors.primaryDim, borderRadius: Radius.sm, paddingHorizontal: Spacing.sm, paddingVertical: 2 },
   attachedEditText: { color: Colors.primary, fontSize: 9, fontWeight: '600' },
 
-  // No script box
   noScriptBox: { gap: Spacing.xs },
   scriptAttachBtns: { flexDirection: 'row', gap: Spacing.xs },
   scriptAttachBtn: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3,
-    paddingVertical: Spacing.sm, borderRadius: Radius.md,
-    backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border,
+    paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border,
   },
   scriptAttachBtnText: { fontSize: 9, fontWeight: '700' },
   noScriptHint: { color: Colors.textDim, fontSize: 9, textAlign: 'center' },
 
-  // Library quick panel
   libPanel: { flex: 1, backgroundColor: Colors.surface },
-  libPanelHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
+  libPanelHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
   libPanelTitle: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '700', flex: 1 },
   libTabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: Colors.border },
-  libTab: {
-    flex: 1, paddingVertical: Spacing.sm, alignItems: 'center',
-    borderBottomWidth: 2, borderBottomColor: 'transparent',
-  },
+  libTab: { flex: 1, paddingVertical: Spacing.sm, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   libTabActive: { borderBottomColor: Colors.primary },
   libTabText: { color: Colors.textDim, fontSize: FontSize.xs },
   libTabTextActive: { color: Colors.primary, fontWeight: '600' },
-  libSearchRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.bg, margin: Spacing.xs,
-    paddingHorizontal: Spacing.sm, borderRadius: Radius.sm,
-    borderWidth: 1, borderColor: Colors.border,
-  },
+  libSearchRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.bg, margin: Spacing.xs, paddingHorizontal: Spacing.sm, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.border },
   libSearchInput: { flex: 1, color: Colors.text, fontSize: FontSize.xs, paddingVertical: 5 },
-  libItem: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
-    borderBottomWidth: 1, borderBottomColor: Colors.border + '30',
-  },
+  libItem: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderBottomWidth: 1, borderBottomColor: Colors.border + '30' },
   libItemName: { color: Colors.text, fontSize: FontSize.xs, fontWeight: '600' },
   libItemDesc: { color: Colors.textDim, fontSize: 9, marginTop: 1 },
 
-  // Script Editor Modal
+  historyPanel: { flex: 1, backgroundColor: Colors.surface },
+  historyHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, padding: Spacing.md, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  historyTitle: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '700', flex: 1 },
+  historyLine: { fontSize: FontSize.xs, lineHeight: 17, paddingHorizontal: Spacing.md, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  historyEmpty: { color: Colors.textDim, fontSize: FontSize.xs, padding: Spacing.lg, textAlign: 'center' },
+
+  // Script editor modal
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#00000080' },
   modalBackdrop2: { flex: 1, backgroundColor: '#00000090', justifyContent: 'flex-end' },
-  scriptEditorModal: {
-    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl, maxHeight: '88%', gap: Spacing.sm,
-    paddingBottom: Spacing.xl,
-  },
-  seHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
+  scriptEditorModal: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, maxHeight: '90%', gap: Spacing.sm, paddingBottom: Spacing.xl },
+  seHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border },
   seTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700' },
   seNodeLabel: { color: Colors.textDim, fontSize: FontSize.xs, flex: 1 },
   seLangRow: { flexDirection: 'row', gap: Spacing.xs, paddingHorizontal: Spacing.lg },
-  seLangBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
-    paddingVertical: Spacing.sm, borderRadius: Radius.md,
-    backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border,
-  },
+  seLangBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: Spacing.sm, borderRadius: Radius.md, backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border },
   seLangText: { color: Colors.textDim, fontSize: FontSize.xs },
-  seNameInput: {
-    marginHorizontal: Spacing.lg, backgroundColor: Colors.surface2,
-    borderRadius: Radius.md, padding: Spacing.sm,
-    color: Colors.text, fontSize: FontSize.sm,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  seTemplateBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    marginHorizontal: Spacing.lg, paddingVertical: 2,
-  },
+  seNameInput: { marginHorizontal: Spacing.lg, backgroundColor: Colors.surface2, borderRadius: Radius.md, padding: Spacing.sm, color: Colors.text, fontSize: FontSize.sm, borderWidth: 1, borderColor: Colors.border },
+  seTemplateBtns: { flexDirection: 'row', gap: Spacing.sm, marginHorizontal: Spacing.lg },
+  seTemplateBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 2, paddingHorizontal: Spacing.sm, borderRadius: Radius.sm, borderWidth: 1, borderColor: Colors.border },
   seTemplateText: { color: Colors.accent, fontSize: FontSize.xs },
-  seCodeWrap: {
-    flex: 1, marginHorizontal: Spacing.lg, backgroundColor: Colors.bg,
-    borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
-    borderLeftWidth: 3, borderLeftColor: Colors.primary, overflow: 'hidden',
-  },
-  seCodeHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
-    paddingHorizontal: Spacing.sm, paddingVertical: 4,
-    borderBottomWidth: 1, borderBottomColor: Colors.border,
-    backgroundColor: Colors.surface2,
-  },
+  seCodeWrap: { flex: 1, marginHorizontal: Spacing.lg, backgroundColor: Colors.bg, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, borderLeftWidth: 3, borderLeftColor: Colors.primary, overflow: 'hidden' },
+  seCodeHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.sm, paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.surface2 },
   seLangDot: { width: 8, height: 8, borderRadius: 4 },
-  seCodeLangLabel: { fontSize: FontSize.xs, fontWeight: '700' },
+  seCodeLangLabel: { fontSize: FontSize.xs, fontWeight: '700', flex: 1 },
+  seCodeLines: { color: Colors.textDim, fontSize: 9 },
   seCodeScroll: { maxHeight: 260 },
-  seCodeInput: {
-    color: Colors.text, fontSize: FontSize.xs, lineHeight: 20,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    padding: Spacing.sm, minHeight: 180,
-  },
+  seCodeInput: { color: Colors.text, fontSize: FontSize.xs, lineHeight: 20, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', padding: Spacing.sm, minHeight: 180 },
   seActions: { flexDirection: 'row', gap: Spacing.md, paddingHorizontal: Spacing.lg },
-  seCancelBtn: {
-    flex: 1, alignItems: 'center', padding: Spacing.md,
-    backgroundColor: Colors.surface2, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border,
-  },
+  seCancelBtn: { flex: 1, alignItems: 'center', padding: Spacing.md, backgroundColor: Colors.surface2, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border },
   seCancelText: { color: Colors.textMuted, fontSize: FontSize.md },
-  seSaveBtn: {
-    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs,
-    backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.md,
-  },
+  seSaveBtn: { flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, backgroundColor: Colors.primary, borderRadius: Radius.md, padding: Spacing.md },
   seSaveText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700' },
 
-  // Recording picker modal
   emptyRecording: { alignItems: 'center', paddingVertical: 48, gap: Spacing.sm },
   emptyRecordingText: { color: Colors.textMuted, fontSize: FontSize.lg, fontWeight: '700' },
   emptyRecordingSubText: { color: Colors.textDim, fontSize: FontSize.sm },
 
-  // Add modal
   addModal: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
-    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl,
-    borderTopRightRadius: Radius.xl, maxHeight: '78%',
+    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, maxHeight: '78%',
   },
-  addModalHeader: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border,
-  },
-  addModalTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700' },
-  addSearch: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.bg, borderRadius: Radius.md,
-    margin: Spacing.md, paddingHorizontal: Spacing.md,
-    borderWidth: 1, borderColor: Colors.border,
-  },
+  addModalHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  addModalTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700', flex: 1 },
+  addModalCount: { color: Colors.textDim, fontSize: FontSize.xs, backgroundColor: Colors.surface2, borderRadius: Radius.full, paddingHorizontal: 6 },
+  addSearch: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.bg, borderRadius: Radius.md, margin: Spacing.md, paddingHorizontal: Spacing.md, borderWidth: 1, borderColor: Colors.border },
   addSearchInput: { flex: 1, color: Colors.text, fontSize: FontSize.md, paddingVertical: Spacing.sm },
   addCatsRow: { alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.md, paddingBottom: Spacing.xs },
-  catChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 3,
-    paddingHorizontal: Spacing.sm, paddingVertical: 5,
-    borderRadius: Radius.full, backgroundColor: Colors.surface2,
-    borderWidth: 1, borderColor: Colors.border,
-  },
+  catChip: { flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: Spacing.sm, paddingVertical: 5, borderRadius: Radius.full, backgroundColor: Colors.surface2, borderWidth: 1, borderColor: Colors.border },
   catChipText: { color: Colors.textDim, fontSize: 10, fontWeight: '600' },
+  catChipCount: { color: Colors.textDim, fontSize: 8 },
   addNodeList: { flex: 1 },
-  addNodeRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.md,
-    padding: Spacing.md, paddingHorizontal: Spacing.lg,
-    borderBottomWidth: 1, borderBottomColor: Colors.border + '40',
-  },
+  addNodeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.md, paddingHorizontal: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border + '40' },
   addNodeIcon: { width: 34, height: 34, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center' },
   addNodeLabel: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600' },
   addNodeDesc: { color: Colors.textDim, fontSize: FontSize.xs, marginTop: 2 },
   addCatBadge: { paddingHorizontal: Spacing.xs, paddingVertical: 2, borderRadius: Radius.sm },
   addCatBadgeText: { fontSize: 9, fontWeight: '700' },
-  addModalFooter: {
-    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
-    borderTopWidth: 1, borderTopColor: Colors.border, backgroundColor: Colors.surface2,
+  noResults: { alignItems: 'center', paddingVertical: 40, gap: Spacing.sm },
+  noResultsText: { color: Colors.textDim, fontSize: FontSize.md },
+
+  // Python Executor Modal
+  pyModalBg: { flex: 1, backgroundColor: '#00000090', justifyContent: 'flex-end' },
+  pyModal: {
+    backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl,
+    maxHeight: '92%', gap: Spacing.sm, paddingBottom: Spacing.xl,
   },
-  addModalFooterText: { color: Colors.textDim, fontSize: FontSize.xs },
+  pyHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  pyTitle: { color: Colors.text, fontSize: FontSize.lg, fontWeight: '700' },
+  pyReadyBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, flex: 1 },
+  pyReadyDot: { width: 7, height: 7, borderRadius: 3.5 },
+  pyReadyText: { fontSize: FontSize.xs, fontWeight: '600' },
+
+  pyTemplateBar: { maxHeight: 36 },
+  pyTemplateContent: { gap: Spacing.xs, paddingHorizontal: Spacing.lg, alignItems: 'center' },
+  pyTemplateBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.sm,
+    paddingVertical: 5, borderRadius: Radius.md, backgroundColor: Colors.surface2,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  pyTemplateBtnActive: { backgroundColor: '#3776AB' + '20', borderColor: '#3776AB' },
+  pyTemplateBtnText: { color: Colors.textDim, fontSize: FontSize.xs },
+
+  pyCodeWrap: {
+    flex: 1, marginHorizontal: Spacing.lg, backgroundColor: Colors.bg, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: '#3776AB' + '50', borderLeftWidth: 3, borderLeftColor: '#3776AB', overflow: 'hidden',
+    minHeight: 150,
+  },
+  pyCodeHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.sm, paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: Colors.border, backgroundColor: Colors.surface2 },
+  pyCodeLabel: { color: '#3776AB', fontSize: FontSize.xs, fontWeight: '700', flex: 1 },
+  pyCodeLines: { color: Colors.textDim, fontSize: 9 },
+  pyCodeScroll: { maxHeight: 200 },
+  pyCodeInput: {
+    color: Colors.text, fontSize: FontSize.xs, lineHeight: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    padding: Spacing.sm, minHeight: 150,
+  },
+
+  pyContextRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, flexWrap: 'wrap', paddingHorizontal: Spacing.lg },
+  pyContextLabel: { color: Colors.textDim, fontSize: FontSize.xs, fontWeight: '700' },
+  pyContextChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: Colors.surface2, borderRadius: Radius.sm, paddingHorizontal: Spacing.xs, paddingVertical: 2,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  pyContextKey: { color: '#3776AB', fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  pyContextVal: { color: Colors.textMuted, fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+
+  pyRunBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm,
+    backgroundColor: '#3776AB', borderRadius: Radius.lg, marginHorizontal: Spacing.lg, padding: Spacing.md,
+  },
+  pyRunBtnText: { color: '#fff', fontSize: FontSize.md, fontWeight: '700', flex: 1 },
+  pyRunSpinner: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff', opacity: 0.6 },
+
+  pyOutputWrap: {
+    marginHorizontal: Spacing.lg, backgroundColor: Colors.bg, borderRadius: Radius.md,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
+  },
+  pyOutputHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, paddingHorizontal: Spacing.sm, paddingVertical: 5, backgroundColor: Colors.surface2, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  pyOutputTitle: { fontSize: FontSize.xs, fontWeight: '700', flex: 1 },
+  pyOutputTime: { color: Colors.textDim, fontSize: 9 },
+  pyOutputScroll: { maxHeight: 120, padding: Spacing.sm },
+  pyOutputLine: { fontSize: FontSize.xs, lineHeight: 18, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 });

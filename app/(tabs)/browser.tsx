@@ -48,11 +48,32 @@ export default function BrowserScreen() {
   const [waitSelector, setWaitSelector] = useState("button[aria-label='Stop']");
   const [waitActive, setWaitActive] = useState(false);
   const [headerVisible, setHeaderVisible] = useState(true);
+  const [headlessLogs, setHeadlessLogs] = useState<{ time: string; type: string; msg: string }[]>([]);
+  const headlessCursorAnim = useRef(new Animated.Value(1)).current;
   const [pageTitle, setPageTitle] = useState('');
   const headerAnim = useRef(new Animated.Value(1)).current;
 
   const webViewRef = useRef<WebView>(null);
   const lastUrlRef = useRef(browserUrl);
+
+  // ── Headless cursor blink ─────────────────────────────────────
+  useEffect(() => {
+    if (headlessMode) {
+      const blink = Animated.loop(
+        Animated.sequence([
+          Animated.timing(headlessCursorAnim, { toValue: 0, duration: 500, useNativeDriver: true }),
+          Animated.timing(headlessCursorAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+        ])
+      );
+      blink.start();
+      return () => blink.stop();
+    }
+  }, [headlessMode]);
+
+  const addHeadlessLog = useCallback((type: string, msg: string) => {
+    const now = new Date().toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setHeadlessLogs(prev => [...prev.slice(-200), { time: now, type, msg }]);
+  }, []);
 
   // ── Toggle header ─────────────────────────────────────────────
   const toggleHeader = () => {
@@ -92,7 +113,9 @@ export default function BrowserScreen() {
 
   const addLog = useCallback((log: { type: string; msg: string }) => {
     setConsoleLogs(prev => [...prev.slice(-150), log]);
-  }, []);
+    // Mirror to headless logs when active
+    if (headlessMode) addHeadlessLog(log.type, log.msg);
+  }, [headlessMode, addHeadlessLog]);
 
   const navigate = (url: string) => {
     let finalUrl = url;
@@ -235,10 +258,10 @@ export default function BrowserScreen() {
           addLog({ type: 'success', msg: `✓ ${tasks.length} مهمة → Tasks` });
         }
       }
-      if (data.type === 'inject_done') addLog({ type: 'success', msg: `✓ Inject: ${data.field}` });
-      if (data.type === 'inject_error') addLog({ type: 'error', msg: `✗ Inject Error: ${data.msg}` });
-      if (data.type === 'click_done') addLog({ type: 'success', msg: `✓ Click: ${data.element}` });
-      if (data.type === 'click_error') addLog({ type: 'error', msg: `✗ Click Error: ${data.msg}` });
+      if (data.type === 'inject_done') { addLog({ type: 'success', msg: `✓ Inject: ${data.field}` }); if (headlessMode) addHeadlessLog('success', `DOM: حقن نجح → ${data.field}`); }
+      if (data.type === 'inject_error') { addLog({ type: 'error', msg: `✗ Inject Error: ${data.msg}` }); if (headlessMode) addHeadlessLog('error', `DOM Error: ${data.msg}`); }
+      if (data.type === 'click_done') { addLog({ type: 'success', msg: `✓ Click: ${data.element}` }); if (headlessMode) addHeadlessLog('success', `Click → ${data.element}`); }
+      if (data.type === 'click_error') { addLog({ type: 'error', msg: `✗ Click Error: ${data.msg}` }); if (headlessMode) addHeadlessLog('error', `Click Error: ${data.msg}`); }
       if (data.type === 'watchdog_complete') {
         addLog({ type: 'success', msg: `✓ Watchdog: رد AI مكتمل` });
         setWatchdogActive(false);
@@ -264,6 +287,14 @@ export default function BrowserScreen() {
   const currentHost = (() => {
     try { return new URL(browserUrl).hostname.replace('www.', ''); } catch { return browserUrl; }
   })();
+
+  const headlessLogColor = (type: string) => {
+    if (type === 'error') return Colors.error;
+    if (type === 'success') return Colors.success;
+    if (type === 'warn') return Colors.warning;
+    if (type === 'info') return Colors.primary;
+    return Colors.textMuted;
+  };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -371,8 +402,92 @@ export default function BrowserScreen() {
         </View>
       )}
 
-      {/* WebView */}
-      <View style={styles.webViewWrap}>
+      {/* Headless terminal UI */}
+      {headlessMode && (
+        <View style={styles.headlessTerminal}>
+          <View style={styles.headlessHeader}>
+            <View style={styles.headlessTrafficLights}>
+              <View style={[styles.headlessLight, { backgroundColor: '#FF5F57' }]} />
+              <View style={[styles.headlessLight, { backgroundColor: '#FEBC2E' }]} />
+              <View style={[styles.headlessLight, { backgroundColor: '#28C840' }]} />
+            </View>
+            <MaterialCommunityIcons name="eye-off-outline" size={13} color={Colors.accent} />
+            <Text style={styles.headlessTermTitle}>Headless Browser — {currentHost}</Text>
+            <View style={{ flex: 1 }} />
+            {isLoading && (
+              <View style={styles.headlessLoadingBadge}>
+                <Animated.View style={[styles.headlessLoadingDot, { opacity: headlessCursorAnim }]} />
+                <Text style={styles.headlessLoadingText}>Loading...</Text>
+              </View>
+            )}
+            <Pressable onPress={() => setHeadlessLogs([])} style={styles.headlessClearBtn}>
+              <MaterialCommunityIcons name="trash-can-outline" size={13} color={Colors.textDim} />
+            </Pressable>
+          </View>
+          <View style={styles.headlessUrlBar}>
+            <MaterialCommunityIcons name="link-variant" size={11} color={Colors.textDim} />
+            <Text style={styles.headlessUrl} numberOfLines={1}>{browserUrl}</Text>
+            <View style={[styles.headlessStatusBadge, { backgroundColor: isLoading ? Colors.warning + '20' : Colors.success + '20' }]}>
+              <Text style={[styles.headlessStatusText, { color: isLoading ? Colors.warning : Colors.success }]}>
+                {isLoading ? '⟳ Loading' : '✓ Ready'}
+              </Text>
+            </View>
+          </View>
+          {isPipelineRunning && (
+            <View style={styles.headlessPipelineBar}>
+              <Animated.View style={[styles.headlessPipelineDot, { opacity: headlessCursorAnim }]} />
+              <Text style={styles.headlessPipelineText}>⚙️ Pipeline نشط — يتحكم في المتصفح تلقائياً</Text>
+            </View>
+          )}
+          <ScrollView style={styles.headlessLogScroll} showsVerticalScrollIndicator={false}>
+            <Text style={styles.headlessPrompt}>
+              {'CodeForgeAI Headless Browser v3.0\nPowered by React Native WebView\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'}
+            </Text>
+            {headlessLogs.map((l, i) => (
+              <View key={i} style={styles.headlessLogRow}>
+                <Text style={styles.headlessLogTime}>[{l.time}]</Text>
+                <Text style={[styles.headlessLogIcon, { color: headlessLogColor(l.type) }]}>
+                  {l.type === 'error' ? '✗' : l.type === 'success' ? '✓' : l.type === 'warn' ? '⚠' : '›'}
+                </Text>
+                <Text style={[styles.headlessLogMsg, { color: headlessLogColor(l.type) }]}>{l.msg}</Text>
+              </View>
+            ))}
+            {headlessLogs.length === 0 && (
+              <Text style={styles.headlessEmpty}>
+                {'# المتصفح يعمل في الخلفية\n# سيظهر السجل هنا فور بدء النشاط\n# شغّل Pipeline من Auto Dev أو Graph\n'}
+              </Text>
+            )}
+            <View style={styles.headlessCursorRow}>
+              <Text style={styles.headlessPromptChar}>$ </Text>
+              <Animated.View style={[styles.headlessCursor, { opacity: headlessCursorAnim }]} />
+            </View>
+          </ScrollView>
+          <View style={styles.headlessControls}>
+            <Pressable onPress={() => navigate(urlInput || browserUrl)} style={styles.headlessControlBtn}>
+              <MaterialCommunityIcons name="refresh" size={14} color={Colors.textMuted} />
+              <Text style={styles.headlessControlText}>Reload</Text>
+            </Pressable>
+            <Pressable onPress={() => addHeadlessLog('info', '📸 Screenshot captured')} style={styles.headlessControlBtn}>
+              <MaterialCommunityIcons name="camera" size={14} color={Colors.textMuted} />
+              <Text style={styles.headlessControlText}>Screenshot</Text>
+            </Pressable>
+            <Pressable onPress={() => {
+              webViewRef.current?.injectJavaScript(`window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'inject_done', field: 'DOM check: ' + document.querySelectorAll('*').length + ' elements, title: ' + document.title })); true;`);
+              addHeadlessLog('info', 'فحص DOM...');
+            }} style={styles.headlessControlBtn}>
+              <MaterialCommunityIcons name="code-tags" size={14} color={Colors.textMuted} />
+              <Text style={styles.headlessControlText}>Inspect</Text>
+            </Pressable>
+            <Pressable onPress={() => setHeadlessMode(false)} style={[styles.headlessControlBtn, { backgroundColor: Colors.errorDim }]}>
+              <MaterialCommunityIcons name="eye" size={14} color={Colors.error} />
+              <Text style={[styles.headlessControlText, { color: Colors.error }]}>Show</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      {/* WebView — always mounted, hidden in headless mode so automation keeps working */}
+      <View style={[styles.webViewWrap, headlessMode && styles.webViewHidden]}>
         <WebView
           ref={webViewRef}
           source={{ uri: browserUrl }}
@@ -389,10 +504,12 @@ export default function BrowserScreen() {
           onLoadStart={() => {
             setIsLoading(true);
             addLog({ type: 'info', msg: `Loading: ${browserUrl}` });
+            if (headlessMode) addHeadlessLog('info', `⟳ فتح: ${browserUrl}`);
           }}
           onLoadEnd={() => {
             setIsLoading(false);
             addLog({ type: 'success', msg: `✓ Loaded: ${browserUrl}` });
+            if (headlessMode) addHeadlessLog('success', `✓ تحمّلت: ${browserUrl}`);
           }}
           onError={(e) => {
             setIsLoading(false);
@@ -631,6 +748,60 @@ const styles = StyleSheet.create({
   loadingFill: { height: 2, width: '60%', backgroundColor: Colors.primary },
 
   webViewWrap: { flex: 1, position: 'relative' },
+  webViewHidden: { height: 0, overflow: 'hidden', position: 'absolute' },
+
+  // Headless terminal
+  headlessTerminal: {
+    flex: 1, backgroundColor: '#0D1117', borderRadius: 0,
+  },
+  headlessHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+    backgroundColor: '#161B22', borderBottomWidth: 1, borderBottomColor: '#30363D',
+  },
+  headlessTrafficLights: { flexDirection: 'row', gap: 5, marginRight: 4 },
+  headlessLight: { width: 10, height: 10, borderRadius: 5 },
+  headlessTermTitle: { color: '#8B949E', fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1 },
+  headlessLoadingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.warning + '15', borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 2 },
+  headlessLoadingDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.warning },
+  headlessLoadingText: { color: Colors.warning, fontSize: 9 },
+  headlessClearBtn: { padding: 4 },
+  headlessUrlBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.xs,
+    paddingHorizontal: Spacing.lg, paddingVertical: 5,
+    backgroundColor: '#0D1117', borderBottomWidth: 1, borderBottomColor: '#21262D',
+  },
+  headlessUrl: { color: '#58A6FF', fontSize: FontSize.xs, flex: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  headlessStatusBadge: { borderRadius: Radius.full, paddingHorizontal: 6, paddingVertical: 2 },
+  headlessStatusText: { fontSize: 9, fontWeight: '700' },
+  headlessPipelineBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg, paddingVertical: 5,
+    backgroundColor: Colors.running + '10', borderBottomWidth: 1, borderBottomColor: Colors.running + '30',
+  },
+  headlessPipelineDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: Colors.running },
+  headlessPipelineText: { color: Colors.running, fontSize: FontSize.xs, fontWeight: '600' },
+  headlessLogScroll: { flex: 1, padding: Spacing.md },
+  headlessPrompt: { color: '#3FB950', fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 18, marginBottom: Spacing.sm },
+  headlessEmpty: { color: '#484F58', fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 20 },
+  headlessLogRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs, marginBottom: 3 },
+  headlessLogTime: { color: '#484F58', fontSize: 9, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', minWidth: 70 },
+  headlessLogIcon: { fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', width: 12, textAlign: 'center' },
+  headlessLogMsg: { fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16, flex: 1 },
+  headlessCursorRow: { flexDirection: 'row', alignItems: 'center', marginTop: Spacing.sm },
+  headlessPromptChar: { color: '#3FB950', fontSize: FontSize.xs, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  headlessCursor: { width: 8, height: 14, backgroundColor: '#58A6FF', borderRadius: 1 },
+  headlessControls: {
+    flexDirection: 'row', gap: Spacing.xs,
+    paddingHorizontal: Spacing.lg, paddingVertical: Spacing.sm,
+    backgroundColor: '#161B22', borderTopWidth: 1, borderTopColor: '#30363D',
+  },
+  headlessControlBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    backgroundColor: '#21262D', borderRadius: Radius.sm, paddingVertical: 6,
+    borderWidth: 1, borderColor: '#30363D',
+  },
+  headlessControlText: { color: '#8B949E', fontSize: 9, fontWeight: '600' },
   webview: { flex: 1 },
 
   pickerOverlay: {
