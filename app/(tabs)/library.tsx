@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput, Modal, Platform,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Radius, Spacing } from '@/constants/theme';
@@ -119,8 +120,9 @@ export default function LibraryScreen() {
   };
 
   // ── Copy to clipboard (simulate) ─────────────────────────────
-  const copyToClipboard = (text: string) => {
-    addNotification({ type: 'info', title: 'تم النسخ', message: text.substring(0, 50), screen: 'library' });
+  const copyToClipboard = async (text: string) => {
+    await Clipboard.setStringAsync(text);
+    addNotification({ type: 'success', title: 'تم النسخ', message: text.substring(0, 50), screen: 'library' });
   };
 
   return (

@@ -1,8 +1,9 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView,
   TextInput, Platform, Modal, Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, FontSize, Radius, Spacing } from '@/constants/theme';
@@ -41,7 +42,7 @@ export default function WorkspaceScreen() {
     files, activeFile, setActiveFile, addFile, addNotification,
     pendingChanges, acceptChange, rejectChange, acceptAllChanges,
     notifications, unreadCount, markNotificationRead, clearNotifications,
-    themeName, setThemeName, navigateToTab,
+    themeName, setThemeName, navigateToTab, updateFileContent, removeFile,
   } = useApp();
 
   const [sideTab, setSideTab] = useState<SideTab>('explorer');
@@ -49,6 +50,7 @@ export default function WorkspaceScreen() {
   const [openTabs, setOpenTabs] = useState<FileNode[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorContent, setEditorContent] = useState('');
+  const [showSaveHint, setShowSaveHint] = useState(false);
   const [showPending, setShowPending] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
   const [showTheme, setShowTheme] = useState(false);
@@ -92,6 +94,7 @@ export default function WorkspaceScreen() {
     }
     setActiveFile(file);
     setEditorContent(file.content || '');
+    setShowSaveHint(false);
     setOpenTabs(prev => prev.find(t => t.id === file.id) ? prev : [...prev, file]);
   }, [setActiveFile]);
 
@@ -176,10 +179,11 @@ export default function WorkspaceScreen() {
 
   const deleteFile = (file: FileNode) => {
     addNotification({ type: 'warning', title: 'تم الحذف', message: file.name, screen: 'workspace' });
+    removeFile(file.id);
+    setOpenTabs(prev => prev.filter(t => t.id !== file.id));
     if (activeFile?.id === file.id) {
       setActiveFile(null);
       setEditorContent('');
-      setOpenTabs(prev => prev.filter(t => t.id !== file.id));
     }
   };
 
@@ -588,6 +592,12 @@ export default function WorkspaceScreen() {
                 {activeFile.path.split('/').filter(Boolean).join(' › ')}
               </Text>
               <View style={{ flex: 1 }} />
+              <Pressable onPress={() => {
+                Clipboard.setStringAsync(activeFile.path);
+                addNotification({ type: 'success', title: 'نسخ المسار', message: activeFile.path, screen: 'workspace' });
+              }} style={styles.filePathCopyBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <MaterialCommunityIcons name="content-copy" size={13} color={Colors.textDim} />
+              </Pressable>
               <Pressable onPress={() => { deleteFile(activeFile); closeTab(activeFile.id); }}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <MaterialCommunityIcons name="trash-can-outline" size={13} color={Colors.error + '80'} />
@@ -598,6 +608,26 @@ export default function WorkspaceScreen() {
           {/* Code Editor */}
           {activeFile ? (
             <View style={styles.editorWrap}>
+              {showSaveHint && (
+                <View style={styles.saveActions}>
+                  <Pressable onPress={() => {
+                    updateFileContent(activeFile.id, editorContent);
+                    setOpenTabs(prev => prev.map(t => t.id === activeFile.id ? { ...t, content: editorContent } : t));
+                    addNotification({ type: 'success', title: 'حفظ الملف', message: activeFile.name, screen: 'workspace' });
+                    setShowSaveHint(false);
+                  }} style={styles.saveBtn}>
+                    <MaterialCommunityIcons name="content-save" size={14} color="#fff" />
+                    <Text style={styles.saveBtnText}>حفظ</Text>
+                  </Pressable>
+                  <Pressable onPress={() => {
+                    setEditorContent(activeFile.content || '');
+                    setShowSaveHint(false);
+                    addNotification({ type: 'info', title: 'تراجع', message: 'تم التراجع عن التعديلات', screen: 'workspace' });
+                  }} style={styles.discardBtn}>
+                    <Text style={styles.discardBtnText}>تراجع</Text>
+                  </Pressable>
+                </View>
+              )}
               <ScrollView style={styles.lineNums} showsVerticalScrollIndicator={false} scrollEnabled={false}>
                 {editorContent.split('\n').map((_, i) => (
                   <Text key={i} style={styles.lineNum}>{i + 1}</Text>
@@ -606,7 +636,14 @@ export default function WorkspaceScreen() {
               <ScrollView style={styles.codeScroll}>
                 <TextInput
                   multiline value={editorContent}
-                  onChangeText={text => { setEditorContent(text); }}
+                  onChangeText={text => {
+                    setEditorContent(text);
+                    if (activeFile) {
+                      setShowSaveHint(text !== (activeFile.content || ''));
+                    }
+                      setShowSaveHint(text !== (activeFile.content || ''));
+                    }
+                  }}
                   style={styles.codeInput} scrollEnabled={false}
                   autoCapitalize="none" autoCorrect={false} spellCheck={false}
                   textAlignVertical="top"
@@ -1020,6 +1057,11 @@ const styles = StyleSheet.create({
   breadcrumbText: { color: Colors.textDim, fontSize: FontSize.xs, flex: 1 },
 
   editorWrap: { flex: 1, flexDirection: 'row' },
+  saveActions: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.sm, backgroundColor: Colors.surface2, borderBottomWidth: 1, borderBottomColor: Colors.border },
+  saveBtn: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: Colors.primary, borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  saveBtnText: { color: '#fff', fontSize: FontSize.xs, fontWeight: '700' },
+  discardBtn: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.md, borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.surface },
+  discardBtnText: { color: Colors.textDim, fontSize: FontSize.xs, fontWeight: '700' },
   lineNums: { width: 38, backgroundColor: Colors.bg, paddingTop: Spacing.sm },
   lineNum: { color: Colors.textDim, fontSize: FontSize.xs, textAlign: 'right', paddingRight: Spacing.sm, lineHeight: 20, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   codeScroll: { flex: 1 },

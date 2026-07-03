@@ -213,6 +213,7 @@ export default function TasksScreen() {
 
   const [filter, setFilter] = useState<FilterStatus>('all');
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [searchQuery, setSearchQuery] = useState('');
   const [showAdd, setShowAdd] = useState(false);
   const [showDeleteAll, setShowDeleteAll] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -224,7 +225,12 @@ export default function TasksScreen() {
   const [showPipelineLogs, setShowPipelineLogs] = useState(false);
 
   const filtered = tasks
-    .filter(t => filter === 'all' || t.status === filter)
+    .filter(t => {
+      const matchesFilter = filter === 'all' || t.status === filter;
+      const matchesSearch = !searchQuery.trim() || [t.title, t.description, ...(t.files || [])]
+        .some(field => String(field || '').toLowerCase().includes(searchQuery.toLowerCase()));
+      return matchesFilter && matchesSearch;
+    })
     .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]);
 
   const completedCount = tasks.filter(t => t.status === 'completed').length;
@@ -298,6 +304,28 @@ export default function TasksScreen() {
           </Pressable>
         </View>
       </View>
+
+      <View style={styles.searchBar}>
+        <MaterialCommunityIcons name="magnify" size={15} color={Colors.textDim} />
+        <TextInput
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder="ابحث في المهام..."
+          placeholderTextColor={Colors.textDim}
+          style={styles.searchInput}
+          returnKeyType="search"
+        />
+        {searchQuery.trim().length > 0 && (
+          <Pressable onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <MaterialCommunityIcons name="close-circle" size={18} color={Colors.textDim} />
+          </Pressable>
+        )}
+      </View>
+      {searchQuery.trim().length > 0 && (
+        <View style={styles.searchInfoBadge}>
+          <Text style={styles.searchInfoText}>{filtered.length} نتيجة لـ "{searchQuery.trim()}"</Text>
+        </View>
+      )}
 
       {/* Pipeline live logs */}
       {showPipelineLogs && pipelineLogs.length > 0 && (
@@ -861,6 +889,23 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.primary + '50', marginTop: Spacing.sm,
   },
   emptyBtnText: { color: Colors.primary, fontSize: FontSize.md, fontWeight: '600' },
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.surface, borderRadius: Radius.lg,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
+  },
+  searchInput: {
+    flex: 1, color: Colors.text, fontSize: FontSize.md,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
+  },
+  searchInfoBadge: {
+    marginHorizontal: Spacing.lg, marginBottom: Spacing.sm,
+    backgroundColor: Colors.primaryDim, borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs,
+  },
+  searchInfoText: { color: Colors.primary, fontSize: FontSize.xs, fontWeight: '600' },
 
   // Activity Log
   activityLog: {

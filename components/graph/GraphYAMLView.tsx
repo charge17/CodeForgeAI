@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Platform } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ScrollView, TextInput, Platform, Share } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Colors, FontSize, Radius, Spacing } from '@/constants/theme';
 import { NODE_DEFINITIONS, GraphNode, GraphEdge } from '@/services/mockData';
@@ -42,9 +43,18 @@ export default function GraphYAMLView({ nodes, edges, onClose, insets }: Props) 
   const [activeFormat, setActiveFormat] = useState<'yaml' | 'json'>('yaml');
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
+  const handleCopy = async () => {
+    await Clipboard.setStringAsync(displayContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleExport = async () => {
+    try {
+      await Share.share({ message: displayContent, title: 'Graph Workflow' });
+    } catch {
+      // ignore share dismiss
+    }
   };
 
   const lineCount = content.split('\n').length;

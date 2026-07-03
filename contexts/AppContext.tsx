@@ -41,6 +41,9 @@ interface AppContextType {
   addGraphNode: (node: GraphNode) => void;
   updateNodeStatus: (id: string, status: GraphNode['status']) => void;
   removeGraphNode: (id: string) => void;
+  updateGraphNode: (id: string, updates: Partial<GraphNode>) => void;
+  updateFileContent: (id: string, content: string) => void;
+  removeFile: (id: string) => void;
   executionStep: number;
   setExecutionStep: (v: number) => void;
   currentNodeId: string | null;
@@ -237,6 +240,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setGraphNodes(prev => prev.map(n => n.id === id ? { ...n, status } : n));
     if (status === 'running') setCurrentNodeId(id);
     if (status === 'completed' || status === 'failed') setCurrentNodeId(null);
+  }, []);
+
+  const updateGraphNode = useCallback((id: string, updates: Partial<GraphNode>) => {
+    setGraphNodes(prev => prev.map(n => n.id === id ? { ...n, ...updates } : n));
+  }, []);
+
+  const updateFileContent = useCallback((id: string, content: string) => {
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, content } : f));
+    setActiveFile(prev => prev && prev.id === id ? { ...prev, content } : prev);
+  }, []);
+
+  const removeFile = useCallback((id: string) => {
+    setFiles(prev => prev.filter(f => f.id !== id));
+    setActiveFile(prev => (prev && prev.id === id ? null : prev));
   }, []);
 
   const removeGraphNode = useCallback((id: string) => {
@@ -924,14 +941,14 @@ export default task_${i + 1};
     <AppContext.Provider value={{
       graphNodes, graphEdges, isRunning, isPaused, graphMode,
       setGraphMode, setIsRunning, setIsPaused,
-      addGraphNode, updateNodeStatus, removeGraphNode,
+      addGraphNode, updateNodeStatus, removeGraphNode, updateGraphNode, updateFileContent,
       executionStep, setExecutionStep, currentNodeId,
       pipelineLogs, addPipelineLog, clearPipelineLogs,
       startPipeline, stopPipeline, isPipelineRunning,
       registerWebViewBridge, webViewBridge,
       activeTab, setActiveTab, navigateToTab,
       tasks, addTask, updateTaskStatus, deleteTask, clearAllTasks, approveTask, addTasksFromJson, replaceTasksFromPipeline,
-      files, activeFile, setActiveFile, addFile, addFilesFromExtraction,
+      files, activeFile, setActiveFile, addFile, addFilesFromExtraction, removeFile,
       pendingChanges, acceptChange, rejectChange, acceptAllChanges,
       notifications, markNotificationRead, clearNotifications, addNotification, unreadCount,
       browserUrl, setBrowserUrl, browserTabs, activeTabId, addBrowserTab, setActiveTabId,
