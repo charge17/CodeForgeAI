@@ -643,7 +643,6 @@ export default function WorkspaceScreen() {
                     }
                   }}
                   style={styles.codeInput} scrollEnabled={false}
-                  autoCapitalize="none" autoCorrect={false} spellCheck={false}
                   textAlignVertical="top"
                 />
               </ScrollView>

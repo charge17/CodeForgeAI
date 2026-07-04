@@ -684,17 +684,22 @@ function BreakpointPanel({ info, onContinue, onStepOver, onAbort }: {
 
 // ── Inspector Panel ─────────────────────────────────────────────
 function InspectorPanel({ node, attachedScript, nodeResult, onClose, onDelete, onToggleBreakpoint,
-  onOpenScriptEditor, onOpenRecordingPicker,
+  onOpenScriptEditor, onOpenRecordingPicker, onUpdateNode,
 }: {
   node: GraphNode; attachedScript?: AttachedScript; nodeResult?: NodeResult;
   onClose: () => void; onDelete: () => void; onToggleBreakpoint: () => void;
   onOpenScriptEditor: () => void; onOpenRecordingPicker: () => void;
+  onUpdateNode: (updates: Partial<GraphNode>) => void;
 }) {
   const def = NODE_DEFINITIONS.find(d => d.type === node.type);
   if (!def) return null;
   const catColor = CAT_COLOR[def.category] || Colors.textDim;
   const bpColor = '#FF4081';
   const scriptLangColor: Record<ScriptLang, string> = { javascript: '#F0DB4F', python: '#3776AB', recording: Colors.error };
+  const [editingLabel, setEditingLabel] = useState(false);
+  const [labelVal, setLabelVal] = useState(node.label || def.label);
+  const [editingConfig, setEditingConfig] = useState(false);
+  const [configText, setConfigText] = useState(Object.entries(node.config || {}).map(([k, v]) => `${k}: ${v}`).join('\n'));
 
   return (
     <View style={styles.inspector}>
@@ -719,7 +724,35 @@ function InspectorPanel({ node, attachedScript, nodeResult, onClose, onDelete, o
       <ScrollView style={styles.inspBody} showsVerticalScrollIndicator={false}>
         <View style={{ padding: Spacing.md, gap: Spacing.md }}>
 
-          {/* Breakpoint toggle */}
+      {/* Node label editor */}
+          <View style={styles.inspSection}>
+            <Text style={styles.inspSectionTitle}>✏️ تعديل اسم العقدة</Text>
+            {editingLabel ? (
+              <View style={styles.inspEditRow}>
+                <TextInput
+                  value={labelVal} onChangeText={setLabelVal}
+                  style={styles.inspEditInput}
+                  autoFocus autoCapitalize="none"
+                  onSubmitEditing={() => { onUpdateNode({ label: labelVal.trim() || def.label }); setEditingLabel(false); }}
+                />
+                <Pressable onPress={() => { onUpdateNode({ label: labelVal.trim() || def.label }); setEditingLabel(false); }}
+                  style={[styles.inspBtn, { backgroundColor: Colors.successDim }]}>
+                  <MaterialCommunityIcons name="check" size={14} color={Colors.success} />
+                </Pressable>
+                <Pressable onPress={() => { setLabelVal(node.label || def.label); setEditingLabel(false); }} style={styles.inspBtn}>
+                  <MaterialCommunityIcons name="close" size={14} color={Colors.textMuted} />
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable onPress={() => { setLabelVal(node.label || def.label); setEditingLabel(true); }}
+                style={styles.inspLabelBox}>
+                <Text style={styles.inspLabelText}>{node.label || def.label}</Text>
+                <MaterialCommunityIcons name="pencil" size={14} color={Colors.textDim} />
+              </Pressable>
+            )}
+          </View>
+
+          {/* Breakpoint toggle */}}
           <Pressable onPress={onToggleBreakpoint}
             style={[styles.inspBpToggle, node.isBreakpoint && styles.inspBpToggleActive]}>
             <MaterialCommunityIcons name="debug-step-over" size={15}
@@ -783,6 +816,63 @@ function InspectorPanel({ node, attachedScript, nodeResult, onClose, onDelete, o
                 </View>
                 <Text style={styles.noScriptHint}>اربط سكريبت أو تسجيل بهذه العقدة</Text>
               </View>
+            )}
+          </View>
+
+          <View style={styles.inspSection}>
+            <Text style={styles.inspSectionTitle}>⚙️ إعدادات العقدة (config)</Text>
+            {editingConfig ? (
+              <View style={{ gap: Spacing.xs }}>
+                <TextInput
+                  value={configText} onChangeText={setConfigText}
+                  multiline scrollEnabled={false} textAlignVertical="top"
+                  style={[styles.inspEditInput, { minHeight: 80, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: FontSize.xs }]}
+                  autoCapitalize="none" autoCorrect={false}
+                  placeholder="key: value\nkey2: value2"
+                  placeholderTextColor={Colors.textDim}
+                />
+                <View style={{ flexDirection: 'row', gap: Spacing.xs }}>
+                  <Pressable onPress={() => {
+                    const newConfig: Record<string, string> = {};
+                    configText.split('\n').forEach(line => {
+                      const idx = line.indexOf(':');
+                      if (idx > 0) {
+                        const k = line.substring(0, idx).trim();
+                        const v = line.substring(idx + 1).trim();
+                        if (k) newConfig[k] = v;
+                      }
+                    });
+                    onUpdateNode({ config: newConfig });
+                    setEditingConfig(false);
+                  }} style={[styles.inspBtn, { flex: 1, backgroundColor: Colors.successDim }]}>
+                    <MaterialCommunityIcons name="check" size={13} color={Colors.success} />
+                    <Text style={{ color: Colors.success, fontSize: FontSize.xs, fontWeight: '700' }}>حفظ Config</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setEditingConfig(false)} style={styles.inspBtn}>
+                    <MaterialCommunityIcons name="close" size={13} color={Colors.textMuted} />
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
+              node.config && Object.keys(node.config).length > 0 ? (
+                <Pressable onPress={() => { setConfigText(Object.entries(node.config || {}).map(([k, v]) => `${k}: ${v}`).join('\n')); setEditingConfig(true); }}
+                  style={styles.inspConfigEditBox}>
+                  {Object.entries(node.config).map(([k, v]) => (
+                    <View key={k} style={styles.inspConfigRow}>
+                      <Text style={styles.inspConfigKey}>{k}</Text>
+                      <Text style={styles.inspConfigVal}>{String(v)}</Text>
+                    </View>
+                  ))}
+                  <View style={{ alignItems: 'flex-end', marginTop: 4 }}>
+                    <MaterialCommunityIcons name="pencil" size={13} color={Colors.textDim} />
+                  </View>
+                </Pressable>
+              ) : (
+                <Pressable onPress={() => { setConfigText(''); setEditingConfig(true); }} style={styles.inspLabelBox}>
+                  <Text style={{ color: Colors.textDim, fontSize: FontSize.xs }}>لا يوجد إعدادات — انقر للإضافة</Text>
+                  <MaterialCommunityIcons name="plus" size={14} color={Colors.textDim} />
+                </Pressable>
+              )
             )}
           </View>
 
@@ -1205,6 +1295,16 @@ export default function GraphScreen() {
             </View>
           )}
 
+          {/* Delete All Nodes */}
+          <Pressable onPress={() => {
+            if (effectivelyRunning) return;
+            graphNodes.forEach(n => removeGraphNode(n.id));
+            setSelectedId(null);
+            addNotification({ type: 'warning', title: 'تم حذف كل العقد', message: `${graphNodes.length} عقدة محذوفة`, screen: 'graph' });
+          }} style={[styles.hBtn, { backgroundColor: Colors.errorDim }]}>
+            <MaterialCommunityIcons name="trash-can-outline" size={13} color={Colors.error} />
+          </Pressable>
+
           {/* Speed control */}
           <Pressable onPress={() => {
             const speeds: ExecSpeed[] = ['slow', 'normal', 'fast', 'instant'];
@@ -1516,6 +1616,7 @@ export default function GraphScreen() {
               onToggleBreakpoint={() => toggleBreakpoint(selectedNode.id)}
               onOpenScriptEditor={() => { setScriptEditorNodeId(selectedNode.id); setShowScriptEditor(true); }}
               onOpenRecordingPicker={() => { setScriptEditorNodeId(selectedNode.id); setShowRecordingPick(true); }}
+              onUpdateNode={(updates) => updateGraphNode(selectedNode.id, updates)}
             />
           </View>
         )}
@@ -1950,6 +2051,12 @@ const styles = StyleSheet.create({
 
   // Script editor modal
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: '#00000080' },
+  // Inspector edit styles
+  inspConfigEditBox: { backgroundColor: Colors.surface2, borderRadius: Radius.md, padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border, gap: 3 },
+  inspLabelBox: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.surface2, borderRadius: Radius.md, padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
+  inspLabelText: { color: Colors.text, fontSize: FontSize.sm, fontWeight: '600', flex: 1 },
+  inspEditRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  inspEditInput: { flex: 1, backgroundColor: Colors.bg, borderRadius: Radius.sm, padding: Spacing.sm, color: Colors.text, fontSize: FontSize.sm, borderWidth: 1, borderColor: Colors.primary + '60' },
   modalBackdrop2: { flex: 1, backgroundColor: '#00000090', justifyContent: 'flex-end' },
   scriptEditorModal: { backgroundColor: Colors.surface, borderTopLeftRadius: Radius.xl, borderTopRightRadius: Radius.xl, maxHeight: '90%', gap: Spacing.sm, paddingBottom: Spacing.xl },
   seHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, padding: Spacing.lg, borderBottomWidth: 1, borderBottomColor: Colors.border },

@@ -125,10 +125,15 @@ interface AppContextType {
   // Library
   scripts: Script[];
   setScripts: (s: Script[]) => void;
+  addScript: (s: Omit<Script, 'id'>) => void;
+  deleteScript: (id: string) => void;
+  updateScript: (id: string, updates: Partial<Script>) => void;
   selectors: Selector[];
   addSelectorToLibrary: (s: Omit<Selector, 'id'>) => void;
   deleteSelector: (id: string) => void;
   recordings: Recording[];
+  addRecordingToLibrary: (r: Omit<Recording, 'id'>) => void;
+  deleteRecording: (id: string) => void;
 }
 
 export const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -178,7 +183,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Library
   const [scripts, setScripts] = useState<Script[]>(INITIAL_SCRIPTS);
   const [selectors, setSelectors] = useState<Selector[]>(INITIAL_SELECTORS);
-  const [recordings] = useState<Recording[]>(INITIAL_RECORDINGS);
+  const [recordings, setRecordings] = useState<Recording[]>(INITIAL_RECORDINGS);
+
+  const addScript = useCallback((s: Omit<Script, 'id'>) => {
+    const newScript: Script = { ...s, id: `sc-${Date.now()}-${Math.random()}` };
+    setScripts(prev => [newScript, ...prev]);
+  }, []);
+
+  const deleteScript = useCallback((id: string) => {
+    setScripts(prev => prev.filter(s => s.id !== id));
+  }, []);
+
+  const updateScript = useCallback((id: string, updates: Partial<Script>) => {
+    setScripts(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+  }, []);
+
+  const addRecordingToLibrary = useCallback((r: Omit<Recording, 'id'>) => {
+    const newRec: Recording = { ...r, id: `rec-${Date.now()}-${Math.random()}` };
+    setRecordings(prev => [newRec, ...prev]);
+  }, []);
+
+  const deleteRecording = useCallback((id: string) => {
+    setRecordings(prev => prev.filter(r => r.id !== id));
+  }, []);
 
   const addSelectorToLibrary = useCallback((s: Omit<Selector, 'id'>) => {
     const newSel: Selector = { ...s, id: `sel-${Date.now()}-${Math.random()}` };
@@ -958,9 +985,9 @@ export default task_${i + 1};
       lastBrowserEvent, setLastBrowserEvent,
       projectIdea, setProjectIdea,
       selectedModelUrl, setSelectedModelUrl,
-      scripts, setScripts,
+      scripts, setScripts, addScript, deleteScript, updateScript,
       selectors, addSelectorToLibrary, deleteSelector,
-      recordings,
+      recordings, addRecordingToLibrary, deleteRecording,
     }}>
       {children}
     </AppContext.Provider>

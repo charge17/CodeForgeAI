@@ -31,6 +31,7 @@ export default function BrowserScreen() {
     setLastBrowserEvent,
     isPipelineRunning,
     addSelectorToLibrary,
+    addRecordingToLibrary,
     headlessMode, setHeadlessMode,
   } = useApp();
 
@@ -587,7 +588,19 @@ export default function BrowserScreen() {
           <Text style={[styles.toolLabel, toolMode === 'picker' && styles.toolLabelActive]}>Picker</Text>
         </Pressable>
 
-        <Pressable onPress={() => { setRecording(v => !v); if (!recording) setRecordedSteps([]); }}
+        <Pressable onPress={() => {
+            if (recording && recordedSteps.length > 0) {
+              addRecordingToLibrary({
+                name: `تسجيل ${currentHost} — ${new Date().toLocaleTimeString('ar')}`,
+                steps: [...recordedSteps],
+                createdAt: new Date().toISOString().split('T')[0],
+                duration: `${Math.round(recordedSteps.length * 2.5)}s`,
+              });
+              addNotification({ type: 'success', title: '🔴 تسجيل محفوظ في المكتبة', message: `${recordedSteps.length} خطوة`, screen: 'library' });
+            }
+            setRecording(v => !v);
+            if (!recording) setRecordedSteps([]);
+          }}
           style={[styles.toolBtn, recording && styles.toolBtnRecord]}>
           <MaterialCommunityIcons name={recording ? 'stop-circle' : 'record-circle'} size={18} color={recording ? Colors.error : Colors.textMuted} />
           <Text style={[styles.toolLabel, recording && { color: Colors.error }]}>{recording ? `● ${recordedSteps.length}` : 'Record'}</Text>
