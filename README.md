@@ -1,75 +1,627 @@
-# Welcome to OnSpace AI
+# CodeForgeAI — منصة تطوير التطبيقات بالذكاء الاصطناعي
 
-Onspace AI empowers anyone to turn ideas into powerful AI applications in minutes—no coding required. Our free, no-code platform enables effortless creation of custom AI apps; simply describe your vision and our agentic AI handles the rest. The onspace-app, built with React Native and Expo, demonstrates this capability—integrating popular third-party libraries to deliver seamless cross-platform performance across iOS, Android, and Web environments.
+<div dir="rtl">
 
-## Getting Started
+## نظرة عامة
 
-### 1. Install Dependencies
-
-```bash
-npm install
-# or
-yarn install
-```
-
-### 2. Start the Project
-
-- Start the development server (choose your platform):
-
-```bash
-npm run start         # Start Expo development server
-npm run android       # Launch Android emulator
-npm run ios           # Launch iOS simulator
-npm run web           # Start the web version
-```
-
-- Reset the project (clear cache, etc.):
-
-```bash
-npm run reset-project
-```
-
-### 3. Lint the Code
-
-```bash
-npm run lint
-```
-
-## Main Dependencies
-
-- React Native: 0.79.4
-- React: 19.0.0
-- Expo: ~53.0.12
-- Expo Router: ~5.1.0
-- Supabase: ^2.50.0
-- Other commonly used libraries:  
-  - @expo/vector-icons  
-  - react-native-paper  
-  - react-native-calendars  
-  - lottie-react-native  
-  - react-native-webview  
-  - and more
-
-For a full list of dependencies, see [package.json](./package.json).
-
-## Development Tools
-
-- TypeScript: ~5.8.3
-- ESLint: ^9.25.0
-- @babel/core: ^7.25.2
-
-## Contributing
-
-1. Fork this repository
-2. Create a new branch (`git checkout -b main`)
-3. Commit your changes (`git commit -am 'Add new feature'`)
-4. Push to the branch (`git push origin feature/your-feature`)
-5. Open a Pull Request
-
-## License
-
-This project is private ("private": true). For collaboration inquiries, please contact the author.
+**CodeForgeAI** منصة متكاملة لأتمتة تطوير البرمجيات، تجمع بين الذكاء الاصطناعي وأتمتة المتصفح وإدارة المشاريع في تطبيق موبايل واحد. تتيح للمطورين المنفردين والفرق الصغيرة بناء تطبيقات كاملة عبر وصف الفكرة فقط، حيث يتولى Pipeline الذكي التخطيط، وكتابة الكود، وتنظيم المهام، وإنشاء الملفات تلقائياً.
 
 ---
 
-Feel free to add project screenshots, API documentation, feature descriptions, or any other information as needed.
+## المكدس التقني
+
+| التقنية | الاستخدام |
+|---|---|
+| React Native + Expo | إطار التطبيق الأساسي |
+| TypeScript | لغة البرمجة |
+| Expo Router | التنقل بين الشاشات (Tab Navigation) |
+| React Context API | إدارة الحالة المركزية |
+| React Native WebView | تشغيل المتصفح وحقن JavaScript |
+| Pyodide (عبر WebView) | تشغيل Python في الخلفية |
+| react-native-safe-area-context | التعامل مع حواف الشاشة |
+| @expo/vector-icons (MaterialCommunityIcons) | أيقونات الواجهة |
+
+---
+
+## هيكل المشروع
+
+```
+├── app/
+│   ├── _layout.tsx              # الجذر: AlertProvider + AppProvider
+│   └── (tabs)/
+│       ├── _layout.tsx          # شريط التبويبات السفلي
+│       ├── autodev.tsx          # شاشة Auto Dev
+│       ├── index.tsx            # شاشة Graph Engine
+│       ├── browser.tsx          # شاشة المتصفح الذكي
+│       ├── workspace.tsx        # شاشة محرر الأكواد
+│       ├── tasks.tsx            # شاشة المهام
+│       └── library.tsx          # شاشة المكتبة
+├── contexts/
+│   └── AppContext.tsx           # الحالة المركزية + محرك Pipeline
+├── hooks/
+│   └── useApp.ts               # Hook للوصول إلى AppContext
+├── services/
+│   ├── mockData.ts             # تعريف البيانات الأولية والأنواع
+│   └── pythonRunner.ts         # خدمة تشغيل Python عبر Pyodide
+├── components/
+│   ├── common/
+│   │   ├── NotificationCenter.tsx
+│   │   └── ThemeSwitcher.tsx
+│   ├── graph/
+│   │   ├── GraphYAMLView.tsx
+│   │   ├── GraphAIAssistant.tsx
+│   │   ├── NodeChip.tsx
+│   │   ├── NodeInspector.tsx
+│   │   └── NodePalette.tsx
+│   ├── tasks/
+│   │   └── TaskItem.tsx
+│   └── workspace/
+│       └── FileTree.tsx
+└── constants/
+    └── theme.ts                # نظام الألوان والمسافات والخطوط
+```
+
+---
+
+## الشاشات
+
+---
+
+### 1. Auto Dev — شاشة البدء والإطلاق
+
+**المسار:** `app/(tabs)/autodev.tsx`
+
+شاشة نقطة الانطلاق لإنشاء المشاريع بالذكاء الاصطناعي. يكتب المستخدم فكرة المشروع ويختار نموذج AI، ثم يضغط "تشغيل" لبدء Pipeline الكامل.
+
+**المميزات:**
+- حقل نصي لوصف فكرة المشروع بحرية
+- اختيار نموذج AI المستهدف (DeepSeek, ChatGPT, Gemini, Claude, Grok)
+- تبديل وضع Headless لتشغيل الأتمتة في الخلفية دون عرض المتصفح
+- زر "إطلاق Pipeline" يبدأ سير العمل الكامل المكوّن من 18 خطوة
+- مؤشر مرئي لحالة Pipeline (نشط / متوقف)
+- نقطة حمراء متحركة على أيقونة التبويب تدل على تشغيل Pipeline
+
+---
+
+### 2. Graph Engine — محرك سير العمل البصري
+
+**المسار:** `app/(tabs)/index.tsx`
+
+القلب التقني للمنصة. يعرض Pipeline كمخطط خطي تسلسلي من 18+ عقدة قابلة للتخصيص، مع دعم كامل للتشغيل والمراقبة والتصحيح.
+
+**المميزات الأساسية:**
+- **عرض Pipeline بصري** — بطاقات العقد مع شريط حالة ملوّن (idle/running/completed/failed)
+- **إضافة عقد** — مودال بحث يعرض 45+ نوع عقدة مصنّفة في 7 فئات (AI, Browser, File, Task, Logic, Trigger, Advanced)
+- **حذف كل العقد** — زر في الشريط العلوي مع تأكيد الحذف
+- **تكبير/تصغير** — نسبة من 50% إلى 150% عبر زرّي + و -
+- **بحث العقد** — شريط بحث يميّز العقد المطابقة ويخفت البقية
+- **تحكم في سرعة التنفيذ** — أربعة أوضاع: Slow / Normal / Fast / Instant
+- **وضع Dry Run** — محاكاة بصرية بدون تشغيل متصفح حقيقي
+
+**نظام Breakpoints:**
+- تعليم أي عقدة كـ Breakpoint (نقطة توقف) من لوحة Inspector
+- إيقاف Pipeline تلقائياً عند الوصول إلى Breakpoint
+- لوحة Context Inspector تعرض متغيرات التنفيذ الحالية (رقم الخطوة، نوع العقدة، المتغيرات)
+- ثلاثة أزرار تحكم: **متابعة** / **Step Over** / **إيقاف**
+
+**نظام السكريبتات:**
+- كل عقدة تقبل سكريبت مرفق بثلاثة أنواع:
+  - **JavaScript** — يُحقن مباشرة في WebView
+  - **Python** — يُنفّذ عبر Pyodide sandbox
+  - **Browser Recording** — تشغيل خطوات تسجيل مسبقة
+- شارات مرئية على البطاقات (JS / PY / REC) تدل على نوع السكريبت المرفق
+- نتائج آخر تنفيذ تظهر مباشرة على بطاقة العقدة
+
+**لوحة Inspector (للعقدة المحددة):**
+- تعديل اسم العقدة مباشرة
+- تعديل إعدادات Config بتنسيق key: value
+- ربط / تعديل / إزالة سكريبت من أي نوع
+- عرض نتيجة آخر تنفيذ مع مدته الزمنية
+- تبديل وضع Breakpoint
+
+**Python Executor العالمي:**
+- مودال مستقل لكتابة وتشغيل Python
+- 6 قوالب جاهزة (hello, data_analysis, string_processing, fibonacci, api_scraper, context_script)
+- تمرير سياق Graph تلقائياً (عدد العقد، المشروع، الحالة)
+- WebView مخفي يحمّل Pyodide ويُنفّذ الكود
+- عرض المخرجات stdout/stderr مع توقيت التنفيذ
+
+**لوحة المكتبة السريعة (Library Quick Panel):**
+- تصفح Scripts / Selectors / Recordings من شريط جانبي
+- ربط أي عنصر بالعقدة المحددة بضغطة واحدة
+
+**أدوات إضافية:**
+- تصدير Pipeline كـ YAML (GraphYAMLView)
+- مساعد AI لاقتراح العقد وتعديل التسلسل (GraphAIAssistant)
+- لوحة سجل التنفيذ (Console) في أسفل الشاشة
+- لوحة تاريخ التنفيذ (Execution History)
+- شريط إحصائيات الفئات أعلى الشاشة
+- شريط تقدم يعرض النسبة المئوية للإنجاز
+
+---
+
+### 3. Browser — المتصفح الذكي
+
+**المسار:** `app/(tabs)/browser.tsx`
+
+متصفح ويب مدمج مبني على React Native WebView مع أدوات أتمتة متقدمة وتكامل كامل مع Pipeline.
+
+**واجهة المتصفح:**
+- **شريط URL مدمج** مع أزرار تنقل للأمام والخلف
+- **تبويبات متعددة** مع إمكانية إضافة تبويب جديد
+- **اختصارات AI** — أزرار سريعة للانتقال إلى DeepSeek, ChatGPT, Gemini, Claude, Grok
+- **شريط مضغوط دائم** يعرض عنوان الصفحة وحالة التحميل
+- **رأس قابل للإخفاء** بانيميشن سلس 200ms للحفاظ على مساحة الشاشة
+- **شريط تحميل** يظهر أثناء تحميل الصفحة
+
+**وضع Headless:**
+- إخفاء WebView بصرياً مع إبقائه نشطاً في الخلفية
+- واجهة Terminal بنمط GitHub Dark مع:
+  - Traffic lights (أحمر / أصفر / أخضر) ديكورية
+  - شريط URL مع حالة التحميل
+  - مؤشر Pipeline نشط
+  - سجل حي بطابع زمني وألوان حسب النوع
+  - مؤشر cursor وامض
+  - أزرار تحكم: Reload / Screenshot / Inspect / Show (للعودة للعرض المرئي)
+
+**أدوات الأتمتة (شريط أسفل الشاشة):**
+
+| الأداة | الوصف |
+|---|---|
+| **Picker** | انقر على أي عنصر في الصفحة لاستخراج CSS Selector تلقائياً وحفظه في المكتبة |
+| **Record** | تسجيل كل تفاعلات المستخدم وحفظها تلقائياً في مكتبة التسجيلات |
+| **Watch (Watchdog)** | مراقبة توقف تدفق رد AI باستخدام MutationObserver |
+| **WaitGone** | انتظار اختفاء عنصر محدد (مثل زر Stop) مع polling كل 500ms |
+| **Headless** | تبديل وضع الخلفية |
+| **Console** | عرض سجل الأحداث والأخطاء والنتائج |
+
+**لوحة Wait Disappear:**
+- حقل إدخال Selector مع اختصارات جاهزة
+- مؤشر "يراقب..." أثناء الانتظار
+- إشعار فوري عند اكتمال الشرط
+
+**Console:**
+- سجل جميع الأحداث (إنجاز injection، نقرات، أخطاء، نتائج WaitDisappear)
+- ألوان مختلفة لكل نوع (success / error / warn / info)
+- زر مسح السجل
+
+**التكامل مع Pipeline:**
+- شريط تنبيه برتقالي عند تشغيل Pipeline
+- WebViewBridge يسمح للـ AppContext بـ: التنقل للصفحات، حقن JavaScript، قراءة URL الحالي
+- نتائج Picker تُحفظ فوراً في Library
+- إيقاف Record يحفظ التسجيل تلقائياً في Library
+
+---
+
+### 4. Workspace — محرر الأكواد ومدير المشاريع
+
+**المسار:** `app/(tabs)/workspace.tsx`
+
+بيئة تطوير متكاملة خفيفة الوزن داخل التطبيق، تشبه VS Code في تصميمها وتدعم إدارة المشاريع وملفاتها بالكامل.
+
+**شريط الأنشطة (Activity Bar):**
+أربعة أقسام رئيسية في الشريط الجانبي:
+
+**قسم Projects:**
+- قائمة المشاريع مع اسم المشروع، الوصف، الفرع، حالة الربط بـ GitHub
+- إنشاء مشروع جديد (اسم + وصف)
+- تبديل المشروع النشط
+- اختصار للـ Starter Kits
+
+**قسم Explorer (مستكشف الملفات):**
+- شجرة ملفات هرمية مع مجلدات قابلة للطي/التوسيع
+- أيقونات ملونة حسب نوع الملف (JSX, TS, CSS, HTML, Python, JSON, إلخ)
+- شارة خضراء على الملفات الجديدة المنشأة بواسطة AI
+- نقر مطوّل على ملف يفتح قائمة سياق (تحرير / نسخ المسار / حذف)
+- أزرار إضافة ملف جديد وإضافة مجلد جديد
+
+**قسم Search (البحث في الكود):**
+- بحث نصي عبر محتوى جميع الملفات
+- عرض النتائج مع اسم الملف والمسار وأسطر الكود المطابقة
+
+**قسم Git (التحكم بالمصدر):**
+- اسم الفرع الحالي مع حالة الربط بـ GitHub
+- حقل Commit Message مع زر Commit & Push
+- قائمة الملفات المتغيرة
+- تبديل بين الفروع (main / develop / feature/ai-pipeline)
+- أزرار: Import / Export / Pull
+
+**محرر الكود:**
+- تبويبات مفتوحة للملفات مع زر إغلاق كل تبويب
+- Breadcrumb يعرض مسار الملف مع زر نسخ المسار
+- أرقام الأسطر مدمجة
+- خط Monospace لعرض الكود
+- شريط حفظ يظهر عند وجود تغييرات (مع زر تراجع)
+- حذف الملف النشط مباشرة من Breadcrumb
+
+**شاشة الترحيب (Welcome):**
+- تظهر عند عدم فتح أي ملف
+- أزرار سريعة: ملف جديد / مشروع جديد / Starter Kit / Import Git
+
+**Starter Kits:**
+- 6 قوالب جاهزة: React App, Next.js, Express API, Python Flask, Expo App, Vue.js
+- كل قالب ينشئ ملفاته مباشرة في مستكشف الملفات
+
+**تصدير/استيراد GitHub:**
+- ربط المشروع بـ Remote URL
+- إرسال Commit & Push
+- Pull من Remote
+- استيراد من رابط Git مباشرة
+
+**شريط الحالة السفلي:**
+- الفرع الحالي + حالة GitHub + عدد التغييرات المعلقة
+- نوع ملف الكود النشط + عدد الأسطر + عدد الأحرف + ترميز UTF-8
+
+**لوحة التغييرات المعلقة (AI Pending Changes):**
+- تظهر عند وجود ملفات منشأة بواسطة AI تنتظر القبول
+- قبول / رفض كل ملف بشكل فردي
+- زر "قبول الكل"
+
+---
+
+### 5. Tasks — إدارة المهام
+
+**المسار:** `app/(tabs)/tasks.tsx`
+
+شاشة إدارة المهام المتكاملة مع Pipeline. تُنشأ المهام تلقائياً عند تشغيل Pipeline أو يُضيفها المستخدم يدوياً.
+
+**الرأس:**
+- عنوان مع ملخص (عدد المكتمل / الإجمالي / الوقت المقدّر)
+- زر تبديل بين ثلاثة أوضاع عرض
+- زر حذف جميع المهام (مع تأكيد)
+- زر إضافة مهمة جديدة
+- زر "Pipeline" يظهر فقط أثناء التشغيل
+
+**شريط البحث:**
+- بحث نصي في عنوان المهمة، الوصف، والملفات
+- عرض عدد النتائج مع النص المبحوث
+
+**شريط التقدم:**
+- شريط مزدوج: أخضر للمكتمل + برتقالي للجاري
+- نسبة مئوية للإنجاز
+
+**إحصائيات سريعة:**
+- 5 بطاقات: الكل / يعمل / انتظار / مكتمل / فشل
+- الضغط على أي بطاقة يفلتر القائمة
+
+**شريط الفلتر:**
+- فلاتر أفقية بالحالة مع عدد كل حالة
+
+**أوضاع العرض الثلاثة:**
+
+**List (قائمة):**
+- بطاقة مفصّلة لكل مهمة تحتوي:
+  - شريط أولوية ملوّن على اليسار (حرج / عالي / متوسط / منخفض)
+  - شارات الحالة والأولوية والوقت المقدّر
+  - عنوان + وصف
+  - قائمة الملفات المرتبطة
+  - لوحة الموافقة للمهام التي تتطلب قراراً بشرياً
+  - أزرار إجراء (تشغيل / إنهاء / فشل / إعادة / حذف)
+
+**Kanban:**
+- 4 أعمدة: انتظار / يعمل / مكتمل / فشل
+- كل عمود يعرض بطاقات مضغوطة بالأولوية والوقت المقدّر
+- عناوين الأعمدة ملونة حسب الحالة مع عداد
+
+**Gantt:**
+- مخطط زمني أفقي لجميع المهام
+- طول الشريط يعكس الوقت المقدّر
+- إزاحة الشريط تعكس ترتيب المهمة
+- ألوان تعكس الحالة الحالية
+
+**لافتة الموافقات المعلقة:**
+- تظهر عند وجود مهام تتطلب موافقة
+- بطاقة موافقة سريعة لكل مهمة
+
+**سجل Pipeline الحي:**
+- يظهر عند الضغط على زر "Pipeline"
+- يعرض آخر 15 رسالة من Pipeline بألوان حسب النوع
+
+**مودال تفاصيل المهمة:**
+- عرض كامل: الحالة، الأولوية، الوقت، الوصف، برومبت AI، الملفات
+- أزرار الإجراء المتاحة حسب الحالة الحالية
+
+**إضافة مهمة يدوياً:**
+- حقول: عنوان، وصف، أولوية (4 خيارات)، وقت مقدّر
+- خيار تفعيل الموافقة البشرية
+
+**شريط النشاط السفلي:**
+- آخر إنجازات Pipeline مع طابع زمني
+
+---
+
+### 6. Library — مكتبة الأصول
+
+**المسار:** `app/(tabs)/library.tsx`
+
+مكتبة مركزية لحفظ وإدارة ثلاثة أنواع من الأصول المستخدمة في الأتمتة.
+
+**الرأس:**
+- إحصائيات سريعة (عدد السكريبتات / Selectors / التسجيلات)
+- مؤشر "Browser متصل" عند ربط WebView
+
+**التبويبات الثلاثة:**
+
+---
+
+**تبويب Selectors:**
+
+قائمة CSS/XPath Selectors للعناصر المستهدفة في المواقع.
+
+- بطاقة لكل Selector تعرض: أيقونة النوع، الاسم، Selector CSS، اسم الموقع، عدد البدائل
+- أنواع Selector: input / send / stop / response / link / button / other (بألوان مختلفة)
+- **Picker:** انتقل للمتصفح وفعّل Picker لحفظ Selectors تلقائياً
+- **إضافة يدوية:** مودال يقبل CSS Selector، اسم، نوع، موقع
+- **اختبار في Browser:** يُبرز العنصر المطابق بحواف زرقاء لمدة 3 ثوانٍ
+- **نسخ:** نسخ Selector إلى الحافظة
+- **حذف:** حذف Selector بشكل فوري
+- **مودال تفاصيل:** يعرض Selector الأساسي + البدائل (Auto-Heal) مع نسخ فردي لكل بديل
+
+---
+
+**تبويب Scripts:**
+
+مكتبة سكريبتات JavaScript قابلة للتشغيل في المتصفح.
+
+- فلترة حسب الفئة (Extraction / Navigation / Interaction / AI / Custom)
+- بطاقة لكل سكريبت تعرض: الاسم، الوصف، الفئة، الوسوم، معاينة الكود
+- **إضافة سكريبت جديد:** مودال كامل بحقول (اسم، وصف، فئة، كود JavaScript)
+- **تعديل سكريبت موجود:** نفس المودال مع تعبئة مسبقة
+- **تشغيل في Browser:** حقن مباشر في WebView مع انتقال للمتصفح
+- **إضافة إلى Graph:** ربط السكريبت بالعقدة المحددة
+- **نسخ الكود**
+- **حذف**
+- 7 سكريبتات افتراضية جاهزة للاستخدام
+
+---
+
+**تبويب Recordings:**
+
+تسجيلات خطوات الأتمتة القابلة للتشغيل في المتصفح.
+
+- بطاقة لكل تسجيل تعرض: الاسم، عدد الخطوات، المدة، التاريخ
+- معاينة أول 3 خطوات مع شارة "+N خطوة أخرى"
+- **حفظ تلقائي:** عند إيقاف Record في شاشة المتصفح يُحفظ التسجيل هنا فوراً
+- **إضافة يدوية:** مودال يقبل اسم + خطوات (سطر واحد = خطوة)
+- **تشغيل في Browser**
+- **تحويل لـ Graph:** إنشاء عقدة Recording في Pipeline
+- **نسخ الخطوات**
+- **حذف**
+- مودال تفاصيل يعرض جميع الخطوات مرقّمة
+- تسجيلان افتراضيان (DeepSeek Auto-Chat + ChatGPT Code Generator)
+
+---
+
+## محرك Pipeline (AppContext)
+
+**المسار:** `contexts/AppContext.tsx`
+
+Pipeline من 18 خطوة يتحكم فعلياً في جميع الشاشات:
+
+| الخطوة | الوصف |
+|---|---|
+| 1 | استقبال فكرة المشروع |
+| 2 | الانتقال لشاشة المتصفح |
+| 3 | فتح نموذج AI (DeepSeek/إلخ) |
+| 4 | انتظار 5 ثوانٍ لتحميل الصفحة |
+| 5 | حقن برومبت التخطيط في حقل الإدخال |
+| 6 | نقر زر الإرسال |
+| 7 | انتظار اختفاء زر Stop (MutationObserver + polling 500ms) |
+| 8 | استخراج JSON المهام وإرسالها لشاشة Tasks |
+| 9 | بدء حلقة تنفيذ المهام |
+| 10-16 | لكل مهمة: فتح جلسة AI جديدة → حقن برومبت الكود → إرسال → انتظار → استخراج ملفات → إنشاؤها في Workspace → تعليم المهمة مكتملة |
+| 17 | الانتقال لشاشة Workspace لعرض الملفات |
+| 18 | إشعار اكتمال المشروع |
+
+---
+
+## تعريف العقد (45+ نوع)
+
+### فئة Trigger
+| العقدة | الوصف |
+|---|---|
+| Auto Dev Start | يستقبل الطلب من شاشة Auto Dev |
+| Trigger | بداية عامة لسير العمل |
+| Webhook | استقبال حدث خارجي |
+
+### فئة AI
+| العقدة | الوصف |
+|---|---|
+| AI Model | استدعاء API مباشر |
+| AI WebView | أتمتة واجهة AI في المتصفح |
+| AI Comparator | مقارنة مخرجات نموذجين |
+
+### فئة Browser
+| العقدة | الوصف |
+|---|---|
+| Go to Browser | الانتقال لشاشة المتصفح |
+| Navigate | فتح رابط |
+| Open New Tab | فتح تبويب جديد |
+| Click | نقر على عنصر |
+| Type Text | كتابة في حقل |
+| Wait (ms) | انتظار زمني ثابت |
+| Wait Appear | انتظار ظهور عنصر |
+| Wait Disappear | انتظار اختفاء عنصر |
+| Wait AI Done | انتظار توقف تدفق AI |
+| Extract Text | استخراج نص |
+| Extract & Save Files | استخراج كتل الكود وحفظها |
+| Extract JSON Tasks | استخراج JSON المهام |
+| Screenshot | التقاط صورة |
+| Execute Script | حقن JavaScript |
+| Pick Selector | اختيار Selector بصري |
+| Web Scraper | استخراج بيانات منظمة |
+
+### فئة File
+| العقدة | الوصف |
+|---|---|
+| Go to Workspace | الانتقال لمحرر الأكواد |
+| Create / Read / Update / Delete File | عمليات CRUD للملفات |
+| Merge Files | دمج محتوى ملفات |
+| Generate Docs | توليد README والتوثيق |
+
+### فئة Task
+| العقدة | الوصف |
+|---|---|
+| Go to Tasks | الانتقال لشاشة المهام |
+| Create Tasks | إنشاء مهام من JSON |
+| Complete Task | تعليم مهمة مكتملة |
+| Ask Human | انتظار قرار بشري |
+
+### فئة Logic
+| العقدة | الوصف |
+|---|---|
+| Delay | تأخير قابل للضبط |
+| Condition | if/else |
+| Loop | تكرار على قائمة |
+| Switch | توجيه متعدد المسارات |
+| Parallel | تشغيل فروع متوازية |
+| Merge | دمج مخرجات الفروع |
+| Code | JavaScript مخصص |
+| Log | إضافة في السجل |
+| Smart Retry | إعادة المحاولة بتأخير متزايد |
+| Breakpoint | نقطة توقف لتصحيح الأخطاء |
+| Run Tests | تشغيل الاختبارات |
+| Deploy | النشر على Vercel/Netlify |
+
+### فئة Advanced
+| العقدة | الوصف |
+|---|---|
+| Send Notification | إرسال إشعار Slack/Discord |
+| DB Query | استعلام SQL/REST |
+
+---
+
+## نظام تشغيل Python
+
+**المسار:** `services/pythonRunner.ts`
+
+- WebView مخفي يحمّل Pyodide (Python 3.11 في WebAssembly)
+- PostMessage Bridge لتمرير الكود والنتائج
+- تمرير سياق Graph للسكريبت (متغيرات التنفيذ)
+- 6 قوالب جاهزة
+- عرض stdout / stderr مع توقيت الأداء
+- مؤشر حالة Pyodide (يتحمّل / جاهز / إصدار Python)
+
+---
+
+## إدارة الحالة
+
+جميع الشاشات الست تشترك في **AppContext** عبر `useApp()` hook:
+
+```typescript
+// حالة Graph
+graphNodes, graphEdges, isRunning, isPaused, graphMode
+
+// حالة Pipeline
+isPipelineRunning, pipelineLogs, startPipeline, stopPipeline
+
+// جسر WebView
+webViewBridge, registerWebViewBridge
+
+// المهام
+tasks, addTask, updateTaskStatus, clearAllTasks
+
+// الملفات
+files, activeFile, addFile, addFilesFromExtraction
+
+// المكتبة
+scripts, selectors, recordings, addScript, addSelectorToLibrary, addRecordingToLibrary
+
+// التنقل
+navigateToTab
+
+// الإشعارات
+notifications, addNotification, unreadCount
+```
+
+---
+
+## نظام الألوان (Dark Theme)
+
+```typescript
+Colors.bg           // خلفية الشاشات
+Colors.surface      // بطاقات وأسطح
+Colors.primary      // الأزرق الأساسي
+Colors.success      // الأخضر
+Colors.error        // الأحمر
+Colors.warning      // البرتقالي
+Colors.running      // اللون المتحرك أثناء التشغيل
+Colors.completed    // لون العقد المكتملة
+Colors.accent       // اللون المميّز
+Colors.text         // النص الأساسي
+Colors.textMuted    // النص الثانوي
+Colors.textDim      // النص الخافت
+Colors.border       // الحدود
+```
+
+---
+
+## تثبيت المشروع
+
+```bash
+# تثبيت المتطلبات
+npm install
+
+# تشغيل على iOS
+npx expo run:ios
+
+# تشغيل على Android
+npx expo run:android
+
+# تشغيل على الويب
+npx expo start --web
+```
+
+---
+
+## المتطلبات
+
+- Node.js 18+
+- Expo CLI
+- iOS 14+ أو Android 9+
+- اتصال إنترنت (للوصول إلى نماذج AI)
+
+---
+
+## سير العمل المعتاد
+
+```
+1. افتح Auto Dev
+   ↓
+2. اكتب فكرة مشروعك (مثال: "تطبيق طقس بـ React")
+   ↓
+3. اختر نموذج AI (DeepSeek موصى به)
+   ↓
+4. اختر وضع Headless أو العادي
+   ↓
+5. اضغط "إطلاق Pipeline"
+   ↓
+6. راقب التقدم في Graph (18 خطوة)
+   ↓
+7. شاهد المهام تُنشأ تلقائياً في Tasks
+   ↓
+8. شاهد الملفات تُنشأ في Workspace
+   ↓
+9. راجع الملفات وعدّل ما تحتاج
+   ↓
+10. صدّر المشروع إلى GitHub
+```
+
+---
+
+## المميزات المستقبلية المخطط لها
+
+- [ ] تشغيل Python sandbox حقيقي عبر WebSocket
+- [ ] استبدال sleep() بأحداث promise حقيقية من WebView
+- [ ] تسجيل تفاعلات المستخدم تلقائياً في Browser
+- [ ] تصدير/استيراد Graph كـ YAML/JSON
+- [ ] مزامنة سحابية عبر Supabase
+- [ ] نظام استرداد الأخطاء مع زر "Fix with AI"
+- [ ] تنفيذ المهام المتوازية عبر Promise.all
+- [ ] Marketplace لمشاركة القوالب والعقد
+
+---
+
+*بُني هذا المشروع بـ React Native + Expo — مُحسَّن لـ iOS و Android*
+
+</div>
